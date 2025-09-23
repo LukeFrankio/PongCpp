@@ -1,0 +1,14 @@
+# Build artifacts
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/Makefile
+/*.vcxproj*
+/*.sln
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
