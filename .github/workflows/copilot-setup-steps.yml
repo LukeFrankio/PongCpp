@@ -1,0 +1,120 @@
+name: Windows CI - Build (Vulkan-aware)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-windows-vulkan:
+    name: Build on Windows (check Vulkan)
+    runs-on: windows-latest
+    env:
+      BUILD_TYPE: Release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC environment
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Ensure CMake is available (install via choco if missing)
+        run: |
+          if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+            Write-Host "CMake not found, installing via choco..."
+            choco install cmake --version=3.25.2 -y
+          } else { cmake --version }
+
+      - name: Print environment info
+        run: |
+          echo "OS: ${{ runner.os }}"
+          echo "VS: $VisualStudioVersion"
+          cmake --version
+
+      - name: Install or detect Vulkan SDK
+        id: install_vulkan
+        shell: powershell
+        run: |
+          Write-Host "Checking for VULKAN_SDK environment variable..."
+          if ($Env:VULKAN_SDK) {
+            Write-Host "VULKAN_SDK already set: $Env:VULKAN_SDK"
+            echo "VULKAN_SDK=$Env:VULKAN_SDK" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+            exit 0
+          }
+
+          Write-Host "VULKAN_SDK not set. Looking for existing install in C:\\VulkanSDK..."
+          $sdkdir = Get-ChildItem -Path C:\VulkanSDK -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if ($sdkdir) {
+            Write-Host "Found Vulkan SDK directory: $($sdkdir.FullName)"
+            echo "VULKAN_SDK=$($sdkdir.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+            exit 0
+          }
+
+          Write-Host "No Vulkan SDK found in C:\\VulkanSDK. Attempting Chocolatey install (requires admin privileges provided on hosted runners)..."
+          choco install vulkan-sdk -y || choco install vulkan-sdk --pre -y
+
+          # After install, try to find latest folder beneath C:\VulkanSDK
+          $sdkdir2 = Get-ChildItem -Path C:\VulkanSDK -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if ($sdkdir2) {
+            Write-Host "Vulkan SDK installed at $($sdkdir2.FullName)"
+            echo "VULKAN_SDK=$($sdkdir2.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+            exit 0
+          }
+
+          Write-Host "Chocolatey install did not yield a C:\\VulkanSDK folder; falling back to system runtime detection..."
+          $sysdll = Join-Path $Env:SystemRoot "System32\vulkan-1.dll"
+          if (Test-Path $sysdll) {
+            Write-Host "Found system vulkan-1.dll: $sysdll"
+            # record as system runtime available; some builds can link to system runtime
+            echo "VULKAN_SDK=SYSTEM" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+            exit 0
+          }
+
+          Write-Error "Vulkan SDK could not be installed or detected. Failing the job."
+          exit 1
+
+      - name: Configure CMake
+        shell: powershell
+        run: |
+          mkdir build
+          cd build
+          $v = $Env:VULKAN_SDK
+          if ($v -and $v -ne 'SYSTEM') {
+            Write-Host "Using VULKAN_SDK: $v"
+            cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DVulkan_INCLUDE_DIR=$v\Include -DVulkan_LIBRARY=$v\Lib ..
+          } else {
+            Write-Host "No explicit Vulkan SDK folder (or using system runtime). Running cmake without Vulkan vars."
+            cmake -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} ..
+          }
+
+      - name: Build Release
+        run: |
+          cd build
+          cmake --build . --config ${{ env.BUILD_TYPE }} -- /m
+
+      - name: Run basic smoke tests (optional)
+        if: always()
+        run: |
+          echo "Smoke: list build artifacts"
+          dir build\$(${{ env.BUILD_TYPE }}) || dir build\Release || dir build
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-build-windows
+          path: |
+            build\${{ env.BUILD_TYPE }}\pong.exe
+            build\${{ env.BUILD_TYPE }}\pong_win.exe
+            build\${{ env.BUILD_TYPE }}\pong_vulkan.exe
+            build\Release\*.recipe
+
+      - name: Upload settings/highscores files if present
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-files
+          path: |
+            build\Release\settings.json
+            build\Release\highscores.json
