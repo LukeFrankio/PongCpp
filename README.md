@@ -1,44 +1,54 @@
-Pong (Win32 / Console / Vulkan)
-===================================
+Pong (Win32 / Console)
+======================
 
-A small Pong clone written in C++ with multiple rendering backends: Win32 GDI, console output, and modern Vulkan graphics.
+A small Pong clone written in C++ using the Win32 API and standard library (no external dependencies).
 
 Features
 
-- **Multiple Rendering Backends**:
-  - Win32/GDI frontend with double-buffering (Windows)
-  - Modern Vulkan renderer with hardware acceleration (Cross-platform)
-  - Simple console frontend (fallback)
+- Win32/GDI frontend with double-buffering
+- Simple console frontend (fallback)
 - Rounded paddle visuals that match collision shape
 - Mouse and keyboard controls
 - AI difficulty levels (Easy / Normal / Hard)
 - Persistent settings and highscores saved as JSON files
 - DPI-aware UI (per-frame ui_scale, WM_DPICHANGED handling)
 
-Quick start
+Quick start (Windows)
 
+<<<<<<< HEAD
 ## Prerequisites
 
 - **General**: CMake 3.8+ and a C++ toolchain
 - **Windows GDI version**: Visual Studio (MSVC) or compatible compiler
 - **Vulkan version**: Vulkan SDK, X11 development libraries (Linux)
+=======
+1. Prerequisites
+   - Visual Studio (MSVC) or CMake + a C++ toolchain
+   - CMake 3.20+ recommended
+>>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
 
-## Build
+2. Build
+   Open PowerShell in the repository root and run:
 
+<<<<<<< HEAD
 ### Windows
 
 Open PowerShell in the repository root and run:
+=======
+   ```powershell
+   .\build.bat
+   ```
+>>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
 
-```powershell
-.\build.bat
-```
+   This configures and builds the project into the `build` folder (Release by default). To build Debug:
 
-This configures and builds the project into the `build` folder (Release by default). To build Debug:
+   ```powershell
+   .\build.bat Debug
+   ```
 
-```powershell
-.\build.bat Debug
-```
+   To clean the build directory:
 
+<<<<<<< HEAD
 ### Linux/Cross-platform (CMake)
 
 ```bash
@@ -62,6 +72,15 @@ To clean the build directory:
 - **Vulkan build**: `build/pong_vulkan` (Linux) or `build\Release\pong_vulkan.exe` (Windows)
 - **GUI build**: `build\Release\pong_win.exe` (Windows only)
 - **Console build**: `build\Release\pong.exe` or `build/pong`
+=======
+   ```powershell
+   .\build.bat clean
+   ```
+
+3. Run
+   - GUI build: `build\Release\pong_win.exe`
+   - Console build: `build\Release\pong.exe`
+>>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
 
 Controls
 
@@ -98,6 +117,7 @@ Troubleshooting
 
 Development notes
 
+<<<<<<< HEAD
 - **Win32 GDI version**: `src/win/game_win.cpp`
 - **Vulkan version**: `src/vulkan/` directory
 - **Core simulation**: `src/core/game_core.cpp` and headers
@@ -119,6 +139,11 @@ The Vulkan renderer provides modern, hardware-accelerated graphics with cross-pl
 - Vulkan 1.0+ compatible graphics hardware
 - Vulkan SDK installed
 - Platform-specific window system (Win32 on Windows, X11 on Linux)
+=======
+- Primary UI code: `src/win/game_win.cpp`
+- Core simulation: `src/core/game_core.cpp` and headers
+- High score/settings persistence: `src/win/highscores.cpp`, `src/win/settings.cpp`
+>>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
 
 ---
 
