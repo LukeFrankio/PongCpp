@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build-windows-vulkan:
+  copilot-setup-steps:
     name: Build on Windows (check Vulkan)
     runs-on: windows-latest
     env:
