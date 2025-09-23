@@ -16,6 +16,7 @@ Features
 Quick start (Windows)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## Prerequisites
 - **General**: CMake 3.8+ and a C++ toolchain
 - **Windows GDI version**: Visual Studio (MSVC) or compatible compiler
@@ -25,10 +26,16 @@ Quick start (Windows)
    - Visual Studio (MSVC) or CMake + a C++ toolchain
    - CMake 3.20+ recommended
 >>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
+=======
+1. Prerequisites
+   - Visual Studio (MSVC) or CMake + a C++ toolchain
+   - CMake 3.20+ recommended
+>>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
 
 2. Build
    Open PowerShell in the repository root and run:
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 ### Windows
 Open PowerShell in the repository root and run:
@@ -37,6 +44,11 @@ Open PowerShell in the repository root and run:
    .\build.bat
    ```
 >>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
+=======
+   ```powershell
+   .\build.bat
+   ```
+>>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
 
    This configures and builds the project into the `build` folder (Release by default). To build Debug:
 
@@ -46,6 +58,7 @@ Open PowerShell in the repository root and run:
 
    To clean the build directory:
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 ### Linux/Cross-platform (CMake)
 ```bash
@@ -76,6 +89,15 @@ To clean the build directory:
    - GUI build: `build\Release\pong_win.exe`
    - Console build: `build\Release\pong.exe`
 >>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
+=======
+   ```powershell
+   .\build.bat clean
+   ```
+
+3. Run
+   - GUI build: `build\Release\pong_win.exe`
+   - Console build: `build\Release\pong.exe`
+>>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
 
 Controls
 
@@ -113,6 +135,7 @@ Troubleshooting
 Development notes
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 - **Win32 GDI version**: `src/win/game_win.cpp`
 - **Vulkan version**: `src/vulkan/` directory
 - **Core simulation**: `src/core/game_core.cpp` and headers
@@ -137,6 +160,11 @@ The Vulkan renderer provides modern, hardware-accelerated graphics with cross-pl
 - Core simulation: `src/core/game_core.cpp` and headers
 - High score/settings persistence: `src/win/highscores.cpp`, `src/win/settings.cpp`
 >>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
+=======
+- Primary UI code: `src/win/game_win.cpp`
+- Core simulation: `src/core/game_core.cpp` and headers
+- High score/settings persistence: `src/win/highscores.cpp`, `src/win/settings.cpp`
+>>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
 
 ---
 
