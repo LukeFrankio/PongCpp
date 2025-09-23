@@ -114,6 +114,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             // GET_Y_LPARAM macro may be missing; extract Y from lParam
             st->mouse_x = (int)(short)LOWORD(lParam);
             st->mouse_y = (int)(short)HIWORD(lParam);
+            // ...existing code...
         }
         return 0;
     case WM_LBUTTONDOWN:
@@ -122,8 +123,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetForegroundWindow(hwnd);
             // record mouse pressed for visual feedback; actual click will be recorded on LBUTTONUP
             st->mouse_pressed = true;
-            // if we're in menu mode, detect which option was clicked
-            if (st->ui_mode == 1) {
+            // ...existing code...
+            // detect which menu option was clicked (do this regardless of ui_mode so clicks don't get lost)
+            {
                 int mx = (int)(short)LOWORD(lParam);
                 int my = (int)(short)HIWORD(lParam);
                 int w = st->width; int h = st->height;
@@ -155,6 +157,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             st->mouse_pressed = false;
             st->last_click_x = (int)(short)LOWORD(lParam);
             st->last_click_y = (int)(short)HIWORD(lParam);
+            // ...existing code...
         }
         return 0;
     }
@@ -163,8 +166,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
 // very small helper to draw text
 static void DrawTextCentered(HDC hdc, const std::wstring &text, int x, int y) {
-    // create a large rect centered at (x,y) so DT_CENTER actually centers horizontally
-    RECT r = { x - 1000, y - 40, x + 1000, y + 40 };
+    // center text around (x,y) with a reasonably sized rect so vertical alignment is consistent
+    RECT r = { x - 400, y - 16, x + 400, y + 16 };
     DrawTextW(hdc, text.c_str(), (int)text.size(), &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
@@ -262,8 +265,10 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         state.ui_mode = 2;
         bool manage = true; int sel = 0;
         while (manage && state.running) {
+            // Pump messages so WindowProc updates state.last_click_*/mouse_* etc.
             MSG msg2;
             while (PeekMessage(&msg2, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg2); DispatchMessage(&msg2); }
+
             int w_now = state.width; int h_now = state.height;
             int dpi_now2 = state.dpi;
             if (dpi_now2 == 96) {
@@ -275,22 +280,144 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 }
             }
             double uisc = (double)dpi_now2 / 96.0;
-            // simple non-destructive modal: draw list and allow ESC to return
+
+            // draw modal background and list
             RECT bg = {0,0,w_now,h_now}; HBRUSH b = CreateSolidBrush(RGB(20,20,30)); FillRect(memDC, &bg, b); DeleteObject(b);
             SetTextColor(memDC, RGB(220,220,220)); SetBkMode(memDC, TRANSPARENT);
             DrawTextCentered(memDC, L"Manage High Scores", w_now/2, (int)round(30*uisc));
+
+            // layout rows
+            int rowStartY = (int)round(80*uisc);
+            int rowH = max(20, (int)round(28 * uisc));
             for (size_t i=0;i<highList.size();++i) {
+                int y = rowStartY + (int)round(i * (rowH + (int)round(4 * uisc)));
+                // highlight selected
+                if ((int)i == sel) {
+                    int pad = (int)round(6 * uisc);
+                    int wbox = (int)round(500 * uisc);
+                    RECT rb = { w_now/2 - wbox/2 - pad, y - pad, w_now/2 + wbox/2 + pad, y + rowH + pad };
+                    HBRUSH selb = CreateSolidBrush(RGB(60,60,90)); FillRect(memDC, &rb, selb); DeleteObject(selb);
+                    SetTextColor(memDC, RGB(255,255,200));
+                } else {
+                    SetTextColor(memDC, RGB(200,200,200));
+                }
                 std::wstring line = std::to_wstring(i+1) + L"  " + highList[i].name + L"  " + std::to_wstring(highList[i].score);
-                int y = (int)round(80*uisc) + (int)round(i * 30 * uisc);
-                DrawTextCentered(memDC, line, w_now/2, y);
+                DrawTextCentered(memDC, line, w_now/2, y + rowH/2);
             }
-            DrawTextCentered(memDC, L"ESC=Back", w_now/2, h_now - (int)round(20*uisc));
+
+            // draw buttons: Delete Selected, Clear All, Back
+            int btnW = (int)round(140 * uisc);
+            int btnH = (int)round(36 * uisc);
+            int btnY = h_now - (int)round(80 * uisc);
+            int gap = (int)round(20 * uisc);
+            RECT btnDel = { w_now/2 - btnW - gap/2, btnY, w_now/2 - gap/2, btnY + btnH };
+            RECT btnClear = { w_now/2 + gap/2, btnY, w_now/2 + btnW + gap/2, btnY + btnH };
+            RECT btnBack = { w_now/2 - btnW/2, h_now - (int)round(40 * uisc) - btnH/2, w_now/2 + btnW/2, h_now - (int)round(40 * uisc) + btnH/2 };
+
+            // Delete button (disabled when no selection)
+            HBRUSH btnBg = CreateSolidBrush(RGB(100,40,40));
+            HBRUSH btnBgDisabled = CreateSolidBrush(RGB(60,60,60));
+            if (highList.empty()) FillRect(memDC, &btnDel, btnBgDisabled); else FillRect(memDC, &btnDel, btnBg);
+            FillRect(memDC, &btnClear, btnBg);
+            FillRect(memDC, &btnBack, btnBgDisabled);
+            DeleteObject(btnBg); DeleteObject(btnBgDisabled);
+
+            SetTextColor(memDC, RGB(240,240,240));
+            DrawTextCentered(memDC, L"Delete Selected", (btnDel.left + btnDel.right)/2, btnDel.top + btnH/2);
+            DrawTextCentered(memDC, L"Clear All", (btnClear.left + btnClear.right)/2, btnClear.top + btnH/2);
+            DrawTextCentered(memDC, L"Back", (btnBack.left + btnBack.right)/2, (btnBack.top + btnBack.bottom)/2);
+
+            // present
             BitBlt(hdc, 0, 0, w_now, h_now, memDC, 0, 0, SRCCOPY);
-            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; manage = false; }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            // handle keyboard: ESC/Back
+            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; manage = false; break; }
+
+            // handle click-on-release via state.last_click_x/last_click_y
+            if (state.last_click_x != -1) {
+                int cx = state.last_click_x; int cy = state.last_click_y;
+                // reset so other loops don't see it
+                state.last_click_x = -1; state.last_click_y = -1;
+
+                // check rows hit
+                bool handled = false;
+                for (size_t i=0;i<highList.size();++i) {
+                    int y = rowStartY + (int)round(i * (rowH + 4) * uisc);
+                    int pad = (int)round(6 * uisc);
+                    int wbox = (int)round(500 * uisc);
+                    RECT rb = { w_now/2 - wbox/2 - pad, y - pad, w_now/2 + wbox/2 + pad, y + rowH + pad };
+                    if (cx >= rb.left && cx <= rb.right && cy >= rb.top && cy <= rb.bottom) {
+                        sel = (int)i; handled = true; break;
+                    }
+                }
+                if (handled) continue; // consumed
+
+                // check Delete Selected
+                if (!highList.empty() && cx >= btnDel.left && cx <= btnDel.right && cy >= btnDel.top && cy <= btnDel.bottom) {
+                    // delete selected entry
+                    // delete selected entry
+                    if (sel >= 0 && sel < (int)highList.size()) {
+                        highList.erase(highList.begin() + sel);
+                        if (sel >= (int)highList.size()) sel = (int)highList.size() - 1;
+                    }
+                    continue;
+                }
+
+                // check Clear All -> show confirmation overlay
+                if (cx >= btnClear.left && cx <= btnClear.right && cy >= btnClear.top && cy <= btnClear.bottom) {
+                    // confirmation loop
+                    // confirmation loop
+                    bool confirm = true; bool doClear = false;
+                    while (confirm && state.running) {
+                        MSG msg3;
+                        while (PeekMessage(&msg3, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg3); DispatchMessage(&msg3); }
+                        // redraw same base modal but with overlay
+                        RECT bg2 = {0,0,w_now,h_now}; HBRUSH b2 = CreateSolidBrush(RGB(10,10,10)); FillRect(memDC, &bg2, b2); DeleteObject(b2);
+                        SetTextColor(memDC, RGB(240,240,240)); SetBkMode(memDC, TRANSPARENT);
+                        DrawTextCentered(memDC, L"Confirm Clear All?", w_now/2, h_now/2 - (int)round(20*uisc));
+
+                        // draw yes/no buttons
+                        int yb = h_now/2 + (int)round(10*uisc);
+                        RECT rYes = { w_now/2 - btnW - gap, yb, w_now/2 - gap, yb + btnH };
+                        RECT rNo = { w_now/2 + gap, yb, w_now/2 + btnW + gap, yb + btnH };
+                        HBRUSH bYes = CreateSolidBrush(RGB(60,120,60)); HBRUSH bNo = CreateSolidBrush(RGB(120,60,60));
+                        FillRect(memDC, &rYes, bYes); FillRect(memDC, &rNo, bNo);
+                        DeleteObject(bYes); DeleteObject(bNo);
+                        DrawTextCentered(memDC, L"Yes", (rYes.left + rYes.right)/2, rYes.top + btnH/2);
+                        DrawTextCentered(memDC, L"No", (rNo.left + rNo.right)/2, rNo.top + btnH/2);
+
+                        BitBlt(hdc, 0, 0, w_now, h_now, memDC, 0, 0, SRCCOPY);
+
+                        if (state.last_click_x != -1) {
+                            int ccx = state.last_click_x; int ccy = state.last_click_y;
+                            state.last_click_x = -1; state.last_click_y = -1;
+                            if (ccx >= rYes.left && ccx <= rYes.right && ccy >= rYes.top && ccy <= rYes.bottom) { doClear = true; confirm = false; break; }
+                            if (ccx >= rNo.left && ccx <= rNo.right && ccy >= rNo.top && ccy <= rNo.bottom) { doClear = false; confirm = false; break; }
+                        }
+                        if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; doClear = true; confirm = false; break; }
+                        if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; doClear = false; confirm = false; break; }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    }
+                    if (doClear) {
+                        highList.clear(); sel = 0;
+                    }
+                    continue;
+                }
+
+                // check Back
+                if (cx >= btnBack.left && cx <= btnBack.right && cy >= btnBack.top && cy <= btnBack.bottom) {
+                    manage = false; continue;
+                }
+            }
+
+            // ...existing code...
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
         }
         state.ui_mode = 1;
     };
+    // Ensure WindowProc knows we're in the menu so mouse clicks map to menu options
+    state.ui_mode = 1;
     // Main configuration/menu loop
     while (inMenu && state.running) {
         // pump messages
@@ -339,14 +466,13 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         auto drawOption = [&](int idx, const std::wstring &text, int x, int y){
             int pad = (int)max(6.0, 10.0 * ui_scale);
             int wbox = (int)max(260.0, 260.0 * ui_scale);
+            RECT rb = {x - pad, y - (int)round(6*ui_scale), x + wbox, y + (int)round(34*ui_scale)};
             if (menuIndex == idx) {
-                RECT rb = {x - pad, y - (int)round(6*ui_scale), x + wbox, y + (int)round(34*ui_scale)};
                 HBRUSH sel = CreateSolidBrush(RGB(60,60,90));
                 FillRect(memDC, &rb, sel);
                 DeleteObject(sel);
                 SetTextColor(memDC, RGB(255,255,200));
             } else if (hoverIndex == idx) {
-                RECT rb = {x - pad, y - (int)round(6*ui_scale), x + wbox, y + (int)round(34*ui_scale)};
                 HBRUSH sel = CreateSolidBrush(RGB(40,40,70));
                 FillRect(memDC, &rb, sel);
                 DeleteObject(sel);
@@ -354,7 +480,8 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             } else {
                 SetTextColor(memDC, RGB(200,200,200));
             }
-            DrawTextCentered(memDC, text, x, y);
+            // center text inside the option rect
+            DrawTextCentered(memDC, text, (rb.left + rb.right)/2, (rb.top + rb.bottom)/2);
         };
 
         drawOption(0, (ctrl==CTRL_KEYBOARD)?L"Control: Keyboard":L"Control: Mouse (follow Y)", winW/2 - (int)round(150*ui_scale), (int)round(120*ui_scale));
@@ -390,7 +517,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         }
         if (state.key_down[VK_RETURN]) {
             state.key_down[VK_RETURN]=false;
-            if (menuIndex==2) { inMenu = false; }
+            if (menuIndex==2) { inMenu = false; state.ui_mode = 0; }
             else if (menuIndex==3) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
             else if (menuIndex==4) { state.running = false; break; }
         }
@@ -410,6 +537,9 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             else if (clicked == 3) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
             else if (clicked == 4) { state.running = false; break; }
         }
+
+    // leaving menu; ensure UI mode returns to gameplay
+    state.ui_mode = 0;
 
         if (settings_changed) {
             settingsMgr.save(exeDir + L"settings.json", settings);
