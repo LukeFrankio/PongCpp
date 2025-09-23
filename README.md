@@ -17,7 +17,6 @@ Quick start (Windows)
 
 <<<<<<< HEAD
 ## Prerequisites
-
 - **General**: CMake 3.8+ and a C++ toolchain
 - **Windows GDI version**: Visual Studio (MSVC) or compatible compiler
 - **Vulkan version**: Vulkan SDK, X11 development libraries (Linux)
@@ -32,7 +31,6 @@ Quick start (Windows)
 
 <<<<<<< HEAD
 ### Windows
-
 Open PowerShell in the repository root and run:
 =======
    ```powershell
@@ -50,7 +48,6 @@ Open PowerShell in the repository root and run:
 
 <<<<<<< HEAD
 ### Linux/Cross-platform (CMake)
-
 ```bash
 # Install Vulkan development dependencies
 sudo apt install libvulkan-dev vulkan-tools libx11-dev
@@ -62,13 +59,11 @@ make -j4
 ```
 
 To clean the build directory:
-
 ```powershell
 .\build.bat clean
 ```
 
 ## Run
-
 - **Vulkan build**: `build/pong_vulkan` (Linux) or `build\Release\pong_vulkan.exe` (Windows)
 - **GUI build**: `build\Release\pong_win.exe` (Windows only)
 - **Console build**: `build\Release\pong.exe` or `build/pong`
@@ -128,14 +123,12 @@ Development notes
 The Vulkan renderer provides modern, hardware-accelerated graphics with cross-platform support. See `docs/vulkan_migration.md` for detailed information about the Vulkan implementation.
 
 **Key advantages:**
-
 - Hardware-accelerated rendering
 - Cross-platform compatibility (Windows, Linux)
 - Modern graphics API features
 - Better performance scaling
 
 **Requirements:**
-
 - Vulkan 1.0+ compatible graphics hardware
 - Vulkan SDK installed
 - Platform-specific window system (Win32 on Windows, X11 on Linux)
