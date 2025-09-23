@@ -52,11 +52,7 @@ jobs:
           }
 
           Write-Host "No Vulkan SDK found in C:\\VulkanSDK. Attempting Chocolatey install (requires admin privileges provided on hosted runners)..."
-          & choco install vulkan-sdk -y
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Primary choco install failed (exit $LASTEXITCODE), trying pre-release package..."
-            & choco install vulkan-sdk --pre -y
-          }
+          choco install vulkan-sdk -y || choco install vulkan-sdk --pre -y
 
           # After install, try to find latest folder beneath C:\VulkanSDK
           $sdkdir2 = Get-ChildItem -Path C:\VulkanSDK -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
@@ -99,18 +95,20 @@ jobs:
 
       - name: Run basic smoke tests (optional)
         if: always()
-        shell: powershell
         run: |
-          Write-Host "Smoke: list build artifacts"
-          $b = Join-Path "$(pwd)" "build\$Env:BUILD_TYPE"
-          if (Test-Path $b) { Get-ChildItem -Path $b } else { if (Test-Path "build\Release") { Get-ChildItem -Path "build\Release" } else { Get-ChildItem -Path build -ErrorAction SilentlyContinue } }
+          echo "Smoke: list build artifacts"
+          dir build\$(${{ env.BUILD_TYPE }}) || dir build\Release || dir build
 
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pong-build-windows
-          path: build
+          path: |
+            build\${{ env.BUILD_TYPE }}\pong.exe
+            build\${{ env.BUILD_TYPE }}\pong_win.exe
+            build\${{ env.BUILD_TYPE }}\pong_vulkan.exe
+            build\Release\*.recipe
 
       - name: Upload settings/highscores files if present
         if: always()
