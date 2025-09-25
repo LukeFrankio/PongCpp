@@ -1,177 +1,196 @@
-Pong (Win32 / Console)
-======================
+# PongCpp
 
-A small Pong clone written in C++ using the Win32 API and standard library (no external dependencies).
+A classic Pong game implementation in C++ with dual frontend support: console and Windows GUI versions.
 
-Features
+## Features
 
-- Win32/GDI frontend with double-buffering
-- Simple console frontend (fallback)
-- Rounded paddle visuals that match collision shape
-- Mouse and keyboard controls
-- AI difficulty levels (Easy / Normal / Hard)
-- Persistent settings and highscores saved as JSON files
-- DPI-aware UI (per-frame ui_scale, WM_DPICHANGED handling)
+### Console Version (Cross-platform)
 
-Quick start (Windows)
+- Text-based ASCII rendering
+- Cross-platform support (Windows/Linux/POSIX)
+- Keyboard controls (W/S keys and arrow keys)
+- Simple AI opponent
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-## Prerequisites
-- **General**: CMake 3.8+ and a C++ toolchain
-- **Windows GDI version**: Visual Studio (MSVC) or compatible compiler
-- **Vulkan version**: Vulkan SDK, X11 development libraries (Linux)
-=======
-1. Prerequisites
-   - Visual Studio (MSVC) or CMake + a C++ toolchain
-   - CMake 3.20+ recommended
->>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
-=======
-1. Prerequisites
-   - Visual Studio (MSVC) or CMake + a C++ toolchain
-   - CMake 3.20+ recommended
->>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
+### Windows GUI Version
 
-2. Build
-   Open PowerShell in the repository root and run:
+- Native Win32/GDI windowed interface
+- DPI awareness for high-resolution displays
+- Multiple control modes:
+  - **Keyboard**: W/S keys for paddle control
+  - **Mouse**: Click and drag or move mouse to control paddle
+- Configurable AI difficulty (Easy/Normal/Hard)
+- High score persistence with player names
+- Settings persistence (control mode, AI difficulty)
+- Real-time physics with ball spin and paddle velocity transfer
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-### Windows
-Open PowerShell in the repository root and run:
-=======
-   ```powershell
-   .\build.bat
-   ```
->>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
-=======
-   ```powershell
-   .\build.bat
-   ```
->>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
+## Technical Details
 
-   This configures and builds the project into the `build` folder (Release by default). To build Debug:
+- **Language**: C++17
+- **Build System**: CMake 3.8+ (prefers 3.20+)
+- **Dependencies**: None (uses only standard library and platform APIs)
+- **Platforms**: Windows (full support), Linux/POSIX (console only)
+- **Architecture**: Shared game core with platform-specific frontends
 
-   ```powershell
-   .\build.bat Debug
-   ```
+## Build Instructions
 
-   To clean the build directory:
+### Prerequisites
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-### Linux/Cross-platform (CMake)
-```bash
-# Install Vulkan development dependencies
-sudo apt install libvulkan-dev vulkan-tools libx11-dev
+**Windows:**
 
-# Build
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j4
-```
+- Visual Studio with C++ support OR CMake + C++ toolchain
+- CMake 3.20+ (recommended)
 
-To clean the build directory:
+**Linux/POSIX:**
+
+- g++ or clang++ with C++17 support
+- CMake 3.8+
+
+### Building on Windows
+
+The easiest way to build on Windows is using the provided batch script:
+
 ```powershell
+# Clean build (removes build directory)
 .\build.bat clean
+
+# Release build (default - builds both console and GUI versions)
+.\build.bat
+
+# Debug build
+.\build.bat Debug
+
+# Force specific Visual Studio generator
+.\build.bat Release "Visual Studio 17 2022"
 ```
 
-## Run
-- **Vulkan build**: `build/pong_vulkan` (Linux) or `build\Release\pong_vulkan.exe` (Windows)
-- **GUI build**: `build\Release\pong_win.exe` (Windows only)
-- **Console build**: `build\Release\pong.exe` or `build/pong`
-=======
-   ```powershell
-   .\build.bat clean
-   ```
+**Build outputs:**
 
-3. Run
-   - GUI build: `build\Release\pong_win.exe`
-   - Console build: `build\Release\pong.exe`
->>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
-=======
-   ```powershell
-   .\build.bat clean
-   ```
+- GUI version: `build\Release\pong_win.exe`
+- Console version: `build\Release\pong.exe`
 
-3. Run
-   - GUI build: `build\Release\pong_win.exe`
-   - Console build: `build\Release\pong.exe`
->>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
+### Building on Linux/Cross-platform
 
-Controls
+Console version only (GUI version requires Win32 APIs):
 
-- Menu navigation: Up/Down arrows, Enter to select
-- Toggle control mode: Left/Right
-- Keyboard gameplay: W/S for left paddle, Up/Down for right paddle
-- Mouse gameplay: move mouse vertically over window (left paddle follows Y)
-- Quit: Q or select Quit from menu
+```bash
+# Clean
+rm -rf build
 
-High Scores and Settings
+# Configure and build Release
+mkdir build && cd build
+cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release
+cmake --build . --config Release
 
-- Persistent settings are stored in `settings.json` next to the executable.
-- High scores are stored in `highscores.json` next to the executable.
+# Configure and build Debug
+cmake -S .. -B . -DCMAKE_BUILD_TYPE=Debug
+cmake --build . --config Debug
+```
 
-DPI and scaling notes
+**Build output:** `build/pong` (console version)
 
-- The UI computes a `ui_scale` value from the window's DPI (96 DPI == scale 1.0).
+## Controls
 
-- The app listens for `WM_DPICHANGED` and recomputes layout. Modals recompute scale per-frame, so resizing while a modal is open should update layout.
+### Console Version
 
-Troubleshooting
+- **W/S**: Move left paddle up/down
+- **Arrow Keys**: Alternative paddle controls
+- **Q**: Quit game
 
-- If build fails during CMake configure, ensure your generator matches your Visual Studio version. You can force a generator like:
+### GUI Version
 
-   ```powershell
-   .\build.bat Release "Visual Studio 17 2022"
-   ```
+- **Keyboard Mode**:
+  - **W/S**: Move paddle up/down
+  - **ESC**: Exit game
+  - **Right-click**: Open configuration menu
 
-- If the Win32 window is blank or crashes, run the console build `build\\Release\\pong.exe` to see logs.
+- **Mouse Mode**:
+  - **Mouse Movement**: Control paddle position
+  - **ESC**: Exit game
+  - **Right-click**: Open configuration menu
 
-- If you see misaligned text or tiny UI on high-DPI screens, make sure your Windows DPI scaling is set correctly and restart the app after system-level DPI changes. The app also tries to scale dynamically on `WM_DPICHANGED`.
+## Configuration
 
----
+The Windows GUI version supports persistent configuration stored in `settings.json`:
 
-Development notes
+```json
+{
+  "control_mode": 0,
+  "ai": 1
+}
+```
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-- **Win32 GDI version**: `src/win/game_win.cpp`
-- **Vulkan version**: `src/vulkan/` directory
-- **Core simulation**: `src/core/game_core.cpp` and headers
-- **High score/settings persistence**: `src/win/highscores.cpp`, `src/win/settings.cpp`
+- `control_mode`: 0 = Keyboard, 1 = Mouse
+- `ai`: 0 = Easy, 1 = Normal, 2 = Hard
 
-## Vulkan Version
+## High Scores
 
-The Vulkan renderer provides modern, hardware-accelerated graphics with cross-platform support. See `docs/vulkan_migration.md` for detailed information about the Vulkan implementation.
+The Windows GUI version tracks high scores in `highscores.json`. Players can enter their name when achieving a high score. The system maintains the top 10 scores.
 
-**Key advantages:**
-- Hardware-accelerated rendering
-- Cross-platform compatibility (Windows, Linux)
-- Modern graphics API features
-- Better performance scaling
+## Project Structure
 
-**Requirements:**
-- Vulkan 1.0+ compatible graphics hardware
-- Vulkan SDK installed
-- Platform-specific window system (Win32 on Windows, X11 on Linux)
-=======
-- Primary UI code: `src/win/game_win.cpp`
-- Core simulation: `src/core/game_core.cpp` and headers
-- High score/settings persistence: `src/win/highscores.cpp`, `src/win/settings.cpp`
->>>>>>> parent of c7097b5 (Implement Vulkan renderer with cross-platform support)
-=======
-- Primary UI code: `src/win/game_win.cpp`
-- Core simulation: `src/core/game_core.cpp` and headers
-- High score/settings persistence: `src/win/highscores.cpp`, `src/win/settings.cpp`
->>>>>>> parent of 684bb17 (Merge pull request #1 from LukeFrankio/copilot/fix-373a12d8-69fe-402a-9db0-7f137ad3ba1c)
+```text
+src/
+├── core/              # Platform-agnostic game logic
+│   ├── game_core.cpp  # Main game simulation, physics, AI
+│   └── game_core.h    # GameCore class, GameState struct
+├── main.cpp           # Console version entry point
+├── game.cpp/.h        # Console game loop, rendering, input
+├── platform.h         # Platform abstraction interface
+├── platform_win.cpp   # Windows console implementation
+├── platform_posix.cpp # POSIX console implementation
+└── win/               # Windows GUI-specific code
+    ├── main_win.cpp   # GUI entry point, DPI awareness
+    ├── game_win.cpp/.h # Win32/GDI rendering, input, menus
+    ├── settings.cpp/.h # JSON settings persistence
+    └── highscores.cpp/.h # JSON high score persistence
+```
 
----
+## Physics & Gameplay
 
-Contributing
+The game features realistic Pong physics:
 
-- Fork and send PRs. Keep changes small and test builds on MSVC.
+- **Ball Behavior**: Consistent velocity with slight acceleration on paddle hits
+- **Paddle Interaction**: Ball spin affected by paddle velocity and contact point
+- **AI Intelligence**: Three difficulty levels with different reaction speeds
+- **Collision Detection**: Precise ball-to-paddle collision with proper normal calculation
 
-License
+## Development
 
-- (Add your license here)
+### Architecture
+
+The project uses a modular architecture with shared game logic:
+
+1. **GameCore** (`src/core/`): Platform-independent game simulation
+2. **Platform Layer** (`src/platform*`): Console I/O abstraction
+3. **Frontends**: Console (`src/game.*`) and Windows GUI (`src/win/`)
+
+### Build Times
+
+- **Clean configure**: ~1-5 seconds
+- **Clean build**: ~10-30 seconds
+- **Incremental build**: ~2-10 seconds
+
+### Common Issues
+
+1. **CMake version warning**: Update `CMakeLists.txt` line 1 to `cmake_minimum_required(VERSION 3.10)` if needed
+2. **Windows blank window**: Run console version to check for error messages
+3. **High DPI issues**: The GUI version includes DPI awareness code for modern displays
+
+## License
+
+This project is available for educational and personal use.
+
+## Contributing
+
+Contributions are welcome! The codebase is designed for easy extension:
+
+- Add new platforms by implementing the `Platform` interface
+- Extend game features in the shared `GameCore` class
+- Add new frontends following the existing patterns
+
+## System Requirements
+
+- **Windows**: Windows 7+ (GUI version), any Windows with console support
+- **Linux**: Any POSIX-compliant system with terminal support
+- **Memory**: < 10MB RAM
+- **Storage**: < 5MB disk space
