@@ -65,8 +65,12 @@ The easiest way to build on Windows is using the provided batch script:
 
 **Build outputs:**
 
-- GUI version: `build\Release\pong_win.exe`
-- Console version: `build\Release\pong.exe`
+- **Release builds:**
+  - GUI version: `dist\release\pong_win.exe`
+  - Console version: `dist\release\pong.exe`
+- **Debug builds:**
+  - GUI version: `dist\debug\pong_win.exe`
+  - Console version: `dist\debug\pong.exe`
 
 ### Building on Linux/Cross-platform
 
@@ -86,7 +90,7 @@ cmake -S .. -B . -DCMAKE_BUILD_TYPE=Debug
 cmake --build . --config Debug
 ```
 
-**Build output:** `build/pong` (console version)
+**Build output:** `dist/release/pong` or `dist/debug/pong` (console version)
 
 ## Controls
 

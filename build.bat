@@ -1,15 +1,17 @@
 @echo off
 REM build.bat - Configure and build the CMake project on Windows
 REM Usage:
-REM   build.bat               # configure + build Release + generate docs
-REM   build.bat Debug         # configure + build Debug
+REM   build.bat               # configure + build Release + generate docs -> dist/release/
+REM   build.bat Debug         # configure + build Debug -> dist/debug/
 REM   build.bat clean         # remove the build directory
+REM   build.bat clean-all     # remove build and dist directories
 REM   build.bat docs          # generate documentation only
 REM   build.bat Release "Visual Studio 17 2022"  # force generator
 
 setlocal EnableDelayedExpansion
 
 set "BUILD_DIR=build"
+set "DIST_DIR=dist"
 set "CONFIG=%~1"
 set "GENERATOR=%~2"
 
@@ -30,6 +32,29 @@ if /I "%CONFIG%"=="clean" (
         echo No build directory to remove.
         exit /b 0
     )
+)
+
+if /I "%CONFIG%"=="clean-all" (
+    echo Cleaning "%CD%\%BUILD_DIR%" and "%CD%\%DIST_DIR%" ...
+    if exist "%BUILD_DIR%" (
+        rd /s /q "%BUILD_DIR%"
+        if errorlevel 1 (
+            echo Failed to remove build directory.
+        ) else (
+            echo Build directory cleaned.
+        )
+    )
+    if exist "%DIST_DIR%" (
+        rd /s /q "%DIST_DIR%"
+        if errorlevel 1 (
+            echo Failed to remove dist directory.
+            exit /b 1
+        ) else (
+            echo Dist directory cleaned.
+        )
+    )
+    echo Clean-all complete.
+    exit /b 0
 )
 
 if /I "%CONFIG%"=="docs" (
@@ -70,6 +95,15 @@ if /I "%CONFIG%"=="Release" (
 
 echo.
 echo Build completed successfully.
+if /I "%CONFIG%"=="Debug" (
+    echo Executables are available in: %DIST_DIR%\debug\
+    if exist "%DIST_DIR%\debug\pong.exe" echo   - pong.exe (console version)
+    if exist "%DIST_DIR%\debug\pong_win.exe" echo   - pong_win.exe (Windows GUI version)
+) else (
+    echo Executables are available in: %DIST_DIR%\release\
+    if exist "%DIST_DIR%\release\pong.exe" echo   - pong.exe (console version)
+    if exist "%DIST_DIR%\release\pong_win.exe" echo   - pong_win.exe (Windows GUI version)
+)
 endlocal
 exit /b 0
 

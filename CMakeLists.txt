@@ -3,6 +3,18 @@ project(pong LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set up dist directory for final output with configuration subdirectories
+set(DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist)
+file(MAKE_DIRECTORY ${DIST_DIR})
+file(MAKE_DIRECTORY ${DIST_DIR}/debug)
+file(MAKE_DIRECTORY ${DIST_DIR}/release)
+
+# Set runtime output directory to dist/config for all configurations
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${DIST_DIR}/debug)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${DIST_DIR}/release)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${DIST_DIR}/release)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${DIST_DIR}/debug)
+
 add_executable(pong
     src/main.cpp
     src/platform_win.cpp
@@ -68,12 +80,42 @@ add_custom_target(clean-docs
     COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_CURRENT_SOURCE_DIR}/docs/doxygen
     COMMENT "Cleaning generated documentation")
 
+# Custom target to ensure dist directories exist
+add_custom_target(setup-dist ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}/debug
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}/release
+    COMMENT "Setting up dist directories")
+
+# Make executables depend on dist setup
+add_dependencies(pong setup-dist)
+if(WIN32)
+    add_dependencies(pong_win setup-dist)
+endif()
+
+# Custom target for cleaning dist directory
+add_custom_target(clean-dist
+    COMMAND ${CMAKE_COMMAND} -E remove_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}/debug
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}/release
+    COMMENT "Cleaning dist directory")
+
 # Print build information
 message(STATUS "PongCpp build configuration:")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Documentation: ${BUILD_DOCUMENTATION}")
+message(STATUS "  Output directory: ${DIST_DIR}")
 if(WIN32)
-    message(STATUS "  Windows GUI target: pong_win")
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        message(STATUS "  Windows GUI target: pong_win -> dist/debug/pong_win.exe")
+    else()
+        message(STATUS "  Windows GUI target: pong_win -> dist/release/pong_win.exe")
+    endif()
 endif()
-message(STATUS "  Console target: pong")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "  Console target: pong -> dist/debug/pong.exe")
+else()
+    message(STATUS "  Console target: pong -> dist/release/pong.exe")
+endif()
