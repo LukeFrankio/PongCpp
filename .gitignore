@@ -17,3 +17,7 @@ Thumbs.db
 
 # Documentation (generated)
 /docs/doxygen/
+
+# ChatMode files
+/memory-bank
+*.chatmode.md
