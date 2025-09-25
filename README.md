@@ -26,7 +26,7 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 ## Technical Details
 
 - **Language**: C++17
-- **Build System**: CMake 3.8+ (prefers 3.20+)
+- **Build System**: CMake 3.10+ (prefers 3.20+)
 - **Dependencies**: None (uses only standard library and platform APIs)
 - **Platforms**: Windows (full support), Linux/POSIX (console only)
 - **Architecture**: Shared game core with platform-specific frontends
@@ -43,7 +43,7 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 **Linux/POSIX:**
 
 - g++ or clang++ with C++17 support
-- CMake 3.8+
+- CMake 3.10+
 
 ### Building on Windows
 

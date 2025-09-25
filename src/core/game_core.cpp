@@ -1,15 +1,35 @@
+/**
+ * @file game_core.cpp
+ * @brief Implementation of core game logic and physics
+ * 
+ * This file implements the GameCore class with realistic Pong physics
+ * including ball-paddle collision with spin effects, AI behavior,
+ * and stable numerical integration using substepping.
+ */
+
 #include "game_core.h"
 #include <cmath>
 
 GameCore::GameCore() { reset(); }
 
 void GameCore::reset() {
+    // Initialize game dimensions and paddle size
     s.gw = 80; s.gh = 24; s.paddle_h = 5;
+    
+    // Center paddles vertically
     s.left_y = s.gh/2.0 - s.paddle_h/2.0;
     s.right_y = s.left_y;
+    
+    // Center ball
     s.ball_x = s.gw/2.0; s.ball_y = s.gh/2.0;
+    
+    // Initial ball velocity (moves toward right player)
     vx = 20.0; vy = 10.0;
+    
+    // Reset scores
     s.score_left = 0; s.score_right = 0;
+    
+    // Store initial paddle positions for velocity calculations
     prev_left_y = s.left_y;
     prev_right_y = s.right_y;
 }
@@ -199,7 +219,15 @@ void GameCore::update(double dt) {
     prev_right_y = s.right_y;
 }
 
-void GameCore::move_left_by(double dy) { s.left_y += dy; }
-void GameCore::set_left_y(double y) { s.left_y = y; }
-void GameCore::move_right_by(double dy) { s.right_y += dy; }
+void GameCore::move_left_by(double dy) { 
+    s.left_y += dy; 
+}
+
+void GameCore::set_left_y(double y) { 
+    s.left_y = y; 
+}
+
+void GameCore::move_right_by(double dy) { 
+    s.right_y += dy; 
+}
 

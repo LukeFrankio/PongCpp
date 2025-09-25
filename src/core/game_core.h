@@ -1,48 +1,151 @@
+/**
+ * @file game_core.h
+ * @brief Core game logic and physics for PongCpp
+ * 
+ * This file contains the platform-independent game simulation logic,
+ * physics calculations, and AI behavior for the Pong game.
+ */
+
 #pragma once
 
 #include <string>
 #include <vector>
 
+/**
+ * @brief Game state structure containing all dynamic game data
+ * 
+ * This structure holds the complete state of a Pong game including
+ * paddle positions, ball position, scores, and game dimensions.
+ */
 struct GameState {
-    int gw = 80;
-    int gh = 24;
-    double left_y = 0.0;
-    double right_y = 0.0;
-    double ball_x = 0.0;
-    double ball_y = 0.0;
-    int paddle_h = 5;
-    int score_left = 0;
-    int score_right = 0;
+    int gw = 80;           ///< Game width in game coordinate units
+    int gh = 24;           ///< Game height in game coordinate units
+    double left_y = 0.0;   ///< Left paddle Y position (center)
+    double right_y = 0.0;  ///< Right paddle Y position (center)
+    double ball_x = 0.0;   ///< Ball X position
+    double ball_y = 0.0;   ///< Ball Y position
+    int paddle_h = 5;      ///< Paddle height in game units
+    int score_left = 0;    ///< Left player score
+    int score_right = 0;   ///< Right player score
 };
 
+/**
+ * @brief Core game simulation class
+ * 
+ * GameCore handles all platform-independent game logic including:
+ * - Ball physics simulation with realistic collision detection
+ * - Paddle-ball interaction with velocity transfer
+ * - AI opponent behavior with configurable difficulty
+ * - Score tracking and game state management
+ * 
+ * The class uses a coordinate system where (0,0) is top-left and
+ * Y increases downward. Physics calculations use continuous coordinates
+ * for smooth movement and accurate collision detection.
+ */
 class GameCore {
 public:
+    /**
+     * @brief Construct a new GameCore object
+     * 
+     * Initializes the game state and resets all values to defaults.
+     */
     GameCore();
+    
+    /**
+     * @brief Reset the game to initial state
+     * 
+     * Resets paddle positions, ball position, scores, and physics state.
+     * Called at game start and after each point is scored.
+     */
     void reset();
+    
+    /**
+     * @brief Update game simulation for one frame
+     * 
+     * Performs physics simulation including:
+     * - Ball movement and boundary collision
+     * - Paddle-ball collision detection and response
+     * - AI paddle movement
+     * - Score detection when ball exits play area
+     * 
+     * Uses substepping for stability with fast-moving objects.
+     * 
+     * @param dt Time delta in seconds since last update
+     */
     void update(double dt);
 
-    // control: move left paddle (keyboard) or set by mouse y in game coords
+    /**
+     * @brief Move left paddle relatively
+     * 
+     * Moves the left (player) paddle by a relative amount.
+     * Used for keyboard control where movement is incremental.
+     * 
+     * @param dy Change in Y position (negative = up, positive = down)
+     */
     void move_left_by(double dy);
+    
+    /**
+     * @brief Set left paddle absolute position
+     * 
+     * Sets the left (player) paddle to an absolute Y coordinate.
+     * Used for mouse control where position is set directly.
+     * Position is automatically clamped to valid game bounds.
+     * 
+     * @param y Absolute Y coordinate for paddle center
+     */
     void set_left_y(double y);
 
-    // manual control of right paddle (for testing)
+    /**
+     * @brief Move right paddle relatively (for testing)
+     * 
+     * Moves the right (AI) paddle by a relative amount.
+     * Normally the AI controls this paddle, but this method
+     * allows manual control for testing purposes.
+     * 
+     * @param dy Change in Y position (negative = up, positive = down)
+     */
     void move_right_by(double dy);
 
+    /**
+     * @brief Get read-only reference to current game state
+     * 
+     * @return const GameState& Immutable reference to game state
+     */
     const GameState& state() const { return s; }
+    
+    /**
+     * @brief Get mutable reference to current game state
+     * 
+     * @return GameState& Mutable reference to game state
+     */
     GameState& state() { return s; }
 
-    // AI difficulty multiplier (1.0 normal)
+    /**
+     * @brief Set AI difficulty multiplier
+     * 
+     * Controls the speed and responsiveness of the AI opponent.
+     * Values less than 1.0 make the AI slower/easier, values
+     * greater than 1.0 make it faster/harder.
+     * 
+     * @param m Speed multiplier (1.0 = normal, 0.5 = easy, 2.0 = hard)
+     */
     void set_ai_speed(double m) { ai_speed = m; }
 
 private:
-    GameState s;
-    double vx, vy;
-    double ai_speed = 1.0;
-    // previous paddle positions (used to estimate paddle velocity during collisions)
-    double prev_left_y = 0.0;
-    double prev_right_y = 0.0;
-    // physics tuning
-    double restitution = 1.03; // slight speed change on hit
-    double tangent_strength = 6.0; // how much contact offset affects tangential impulse
-    double paddle_influence = 1.5; // how much paddle velocity transfers to ball
+    GameState s;                    ///< Current game state
+    double vx, vy;                  ///< Ball velocity components
+    double ai_speed = 1.0;          ///< AI difficulty multiplier
+    
+    /// @name Paddle Physics State
+    /// @{
+    double prev_left_y = 0.0;       ///< Previous left paddle Y (for velocity calculation)
+    double prev_right_y = 0.0;      ///< Previous right paddle Y (for velocity calculation)
+    /// @}
+    
+    /// @name Physics Tuning Parameters
+    /// @{
+    double restitution = 1.03;      ///< Energy multiplier on paddle hits (>1.0 = slight speedup)
+    double tangent_strength = 6.0;  ///< How much contact offset affects ball spin
+    double paddle_influence = 1.5;  ///< How much paddle velocity transfers to ball
+    /// @}
 };

@@ -1,3 +1,11 @@
+/**
+ * @file game.cpp
+ * @brief Implementation of console-based Pong game interface
+ * 
+ * This file implements the Game class methods for running a text-based
+ * version of Pong in a console/terminal window with ASCII graphics.
+ */
+
 #include "game.h"
 #include "core/game_core.h"
 #include <chrono>
@@ -9,8 +17,8 @@
 
 Game::Game(int w, int h, Platform &platform)
 : width(w), height(h), platform(platform) {
-    // initialize core to terminal grid size
-    // we'll create a GameCore instance in run() instead for deterministic reset
+    // Store dimensions and platform reference
+    // GameCore instance will be created in run() for deterministic initialization
 }
 
 void Game::process_input(GameCore &core) {

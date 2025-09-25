@@ -13,3 +13,6 @@ Thumbs.db
 # Editor
 .vscode/
 *.code-workspace
+
+# Documentation (generated)
+/docs/doxygen/

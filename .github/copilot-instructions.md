@@ -8,7 +8,7 @@ PongCpp is a classic Pong game implementation written in C++ with dual frontend 
 
 **Repository size**: Small (~15 source files, ~3K lines of code)  
 **Languages**: C++ (C++17 standard)  
-**Build system**: CMake 3.8+ (prefers 3.20+)  
+**Build system**: CMake 3.10+ (prefers 3.20+)  
 **Target platforms**: Windows (primary), Linux/POSIX (console only)  
 **External dependencies**: None (uses only standard library + platform APIs)
 
@@ -16,7 +16,7 @@ PongCpp is a classic Pong game implementation written in C++ with dual frontend 
 
 ### Prerequisites
 - **Windows**: Visual Studio (MSVC) or CMake + C++ toolchain, CMake 3.20+
-- **Linux/POSIX**: g++/clang++ with C++17 support, CMake 3.8+
+- **Linux/POSIX**: g++/clang++ with C++17 support, CMake 3.10+
 
 ### Build Commands
 

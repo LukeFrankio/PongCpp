@@ -1,3 +1,16 @@
+/**
+ * @file game_win.cpp
+ * @brief Windows GUI implementation of PongCpp using Win32 and GDI
+ * 
+ * This file implements a complete Windows GUI version of Pong using
+ * native Win32 APIs and GDI for rendering. Features include:
+ * - DPI-aware window management
+ * - Real-time mouse and keyboard input
+ * - Settings and high score persistence
+ * - Context menus for configuration
+ * - Smooth GDI-based graphics rendering
+ */
+
 #include "../game.h"
 #include "game_win.h"
 
@@ -11,6 +24,7 @@
 #include "highscores.h"
 #include "settings.h"
 
+/// Window class name for registration
 static const wchar_t CLASS_NAME[] = L"PongWindowClass";
 
 struct WinState {
