@@ -180,10 +180,19 @@ void SoftRenderer::render(const GameState &gs) {
             for (int s=0; s<spp; ++s) {
                 float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
                 float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
-                float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
-                float py = (1-2*ry)*tanF;
-                Vec3 rd = norm(Vec3{px,py,1});
-                Vec3 ro = camPos;
+                Vec3 rd; Vec3 ro;
+                if (config.useOrtho) {
+                    // Map pixel to world X/Y directly matching toWorld scaling ([-2,2] x [-1.5,1.5])
+                    float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
+                    float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f; // invert to match screen space
+                    ro = { wx, wy, -1.0f }; // start slightly in front of scene origin plane
+                    rd = { 0,0,1 };         // shoot straight forward
+                } else {
+                    float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
+                    float py = (1-2*ry)*tanF;
+                    rd = norm(Vec3{px,py,1});
+                    ro = camPos;
+                }
                 Vec3 throughput{1,1,1};
                 for (int bounce=0; bounce<config.maxBounces; ++bounce) {
                     Hit best; best.t=1e30f; bool hit=false;

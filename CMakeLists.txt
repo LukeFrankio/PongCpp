@@ -3,6 +3,37 @@ project(pong LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Optionally enforce 64-bit build. Default ON on Windows (recommended there), OFF elsewhere
+if (WIN32)
+    option(ENFORCE_64BIT "Fail configuration if not building a 64-bit binary (recommended on Windows)" ON)
+else()
+    option(ENFORCE_64BIT "Fail configuration if not building a 64-bit binary (recommended on Windows)" OFF)
+endif()
+
+# New: allow opting into a strict fatal error if desired
+option(ENFORCE_64BIT_FATAL "Treat 64-bit enforcement as fatal error (default OFF). Set -DENFORCE_64BIT_FATAL=ON to make configuration fail on non-64-bit systems." OFF)
+
+# New option to allow suppressing the non-fatal 64-bit warning
+option(ENFORCE_64BIT_WARN "Show a non-fatal warning when not building 64-bit (can be turned OFF to silence)" ON)
+
+if (ENFORCE_64BIT)
+    # Only check if CMAKE_SIZEOF_VOID_P is known to avoid spurious warnings
+    if (DEFINED CMAKE_SIZEOF_VOID_P)
+        if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            if (ENFORCE_64BIT_FATAL)
+                message(FATAL_ERROR "64-bit build required (pointer size = ${CMAKE_SIZEOF_VOID_P}). Configure with -DENFORCE_64BIT=OFF to override or disable -DENFORCE_64BIT_FATAL.")
+            elseif (ENFORCE_64BIT_WARN)
+                # Use STATUS instead of WARNING to avoid emitting a CMake "Warning" entry during normal 32-bit configurations.
+                # This still displays informative output but won't be treated as a warning by CMake.
+                message(STATUS "64-bit build recommended (pointer size = ${CMAKE_SIZEOF_VOID_P}). If you intend to build 32-bit, reconfigure with -DENFORCE_64BIT=OFF. To make this check fatal, set -DENFORCE_64BIT_FATAL=ON.")
+            endif()
+        endif()
+    else()
+        # Pointer size unknown — skip the check rather than warn spuriously
+        message(STATUS "ENFORCE_64BIT is enabled but CMAKE_SIZEOF_VOID_P is not defined; skipping pointer-size check.")
+    endif()
+endif()
+
 # Set up dist directory for final output with configuration subdirectories
 set(DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist)
 file(MAKE_DIRECTORY ${DIST_DIR})

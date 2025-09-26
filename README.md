@@ -94,20 +94,23 @@ Legacy fields `quality` and presets remain in the JSON for backward compatibilit
 
 ### Building on Windows
 
-The easiest way to build on Windows is using the provided batch script:
+The batch script now automatically selects 64‑bit (x64) for Visual Studio generators. Pass `Win32` (or `x86`) explicitly as the third argument to force a 32‑bit build.
 
 ```powershell
 # Clean build (removes build directory)
 .\build.bat clean
 
-# Release build (default - builds both console and GUI versions)
+# Release build (default - builds both console and GUI versions, 64-bit)
 .\build.bat
 
 # Debug build
 .\build.bat Debug
 
-# Force specific Visual Studio generator
+# Force specific Visual Studio generator (auto x64)
 .\build.bat Release "Visual Studio 17 2022"
+
+# Force 32-bit (override)
+.\build.bat Release "Visual Studio 17 2022" Win32
 ```
 
 **Build outputs:**
@@ -138,6 +141,21 @@ cmake --build . --config Debug
 ```
 
 **Build output:** `dist/release/pong` or `dist/debug/pong` (console version)
+
+### Architecture (64-bit Enforcement)
+
+By default Windows builds enforce 64-bit (pointer size must be 8). To build 32-bit intentionally:
+
+```powershell
+cmake -S . -B build32 -G "Visual Studio 17 2022" -A Win32 -D ENFORCE_64BIT=OFF -D CMAKE_BUILD_TYPE=Release
+cmake --build build32 --config Release
+```
+
+Or via the batch script (still requires ENFORCE_64BIT override if you reconfigure manually afterwards):
+
+```powershell
+./build.bat Release "Visual Studio 17 2022" x86
+```
 
 ## Controls
 

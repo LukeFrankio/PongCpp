@@ -14,6 +14,7 @@ set "BUILD_DIR=build"
 set "DIST_DIR=dist"
 set "CONFIG=%~1"
 set "GENERATOR=%~2"
+set "ARCH=%~3"  REM Optional architecture (e.g. x64 or Win32) for VS generator
 
 if "%CONFIG%"=="" set "CONFIG=Release"
 
@@ -64,10 +65,30 @@ if /I "%CONFIG%"=="docs" (
 )
 
 echo === CMake configure (build dir: %BUILD_DIR%) ===
-if "%GENERATOR%"=="" (
-    cmake -S . -B "%BUILD_DIR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
+
+REM Auto-select Visual Studio 2022 + x64 if no generator provided
+if "%GENERATOR%"=="" set "GENERATOR=Visual Studio 17 2022"
+if "%ARCH%"=="" set "ARCH=x64"
+
+echo Selected generator: %GENERATOR%
+echo Selected architecture request: %ARCH% (override by passing Win32 or x86 as 3rd arg)
+
+REM Determine if generator is a Visual Studio generator (needs -A)
+set "NEEDS_ARCH="
+echo %GENERATOR% | find /I "Visual Studio" >NUL && set "NEEDS_ARCH=1"
+
+if /I "%ARCH%"=="x86" set "ARCH=Win32"
+if /I "%ARCH%"=="win32" set "ARCH=Win32"
+
+if defined NEEDS_ARCH (
+    echo Configuring with platform: %ARCH%
+    cmake -S . -B "%BUILD_DIR%" -G "%GENERATOR%" -A %ARCH% -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
+    if errorlevel 1 (
+        echo Visual Studio configure with -A %ARCH% failed; retrying without -A (last resort)
+        cmake -S . -B "%BUILD_DIR%" -G "%GENERATOR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
+    )
 ) else (
-    echo Using generator: %GENERATOR%
+    echo Non-VS generator detected; omitting -A platform flag
     cmake -S . -B "%BUILD_DIR%" -G "%GENERATOR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
 )
 if errorlevel 1 (

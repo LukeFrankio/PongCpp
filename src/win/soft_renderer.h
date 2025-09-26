@@ -49,6 +49,8 @@ struct SRConfig {
     // Denoising / accumulation
     float accumAlpha = 0.1f;              // Temporal EMA factor (0.01 .. 0.9)
     float denoiseStrength = 0.35f;        // 0 disables spatial blend, 1 full 3x3 blur
+    // Camera
+    bool useOrtho = true;                 // When true, use orthographic camera matching 2D game mapping
 };
 
 class SoftRenderer {
