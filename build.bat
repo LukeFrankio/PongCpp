@@ -17,6 +17,31 @@ set "GENERATOR=%~2"
 
 if "%CONFIG%"=="" set "CONFIG=Release"
 
+REM Check for Vulkan SDK and Slang
+set "BUILD_VULKAN=OFF"
+if defined VULKAN_SDK (
+    echo Found Vulkan SDK: %VULKAN_SDK%
+    
+    REM Check for Slang - first try SLANG_DIR, then check within Vulkan SDK
+    if defined SLANG_DIR (
+        echo Found Slang SDK: %SLANG_DIR%
+        set "BUILD_VULKAN=ON"
+    ) else (
+        REM Check if Slang is included in Vulkan SDK
+        if exist "%VULKAN_SDK%\Lib\slang.lib" (
+            echo Found Slang within Vulkan SDK: %VULKAN_SDK%
+            set "BUILD_VULKAN=ON"
+        ) else (
+            echo Warning: Slang not found in Vulkan SDK or SLANG_DIR.
+            echo Vulkan renderer will be skipped.
+            echo Either set SLANG_DIR environment variable or ensure Slang is included in your Vulkan SDK.
+        )
+    )
+) else (
+    echo Warning: VULKAN_SDK not found. Vulkan renderer will be skipped.
+    echo Please install Vulkan SDK and set VULKAN_SDK environment variable.
+)
+
 if /I "%CONFIG%"=="clean" (
     echo Cleaning "%CD%\%BUILD_DIR%" ...
     if exist "%BUILD_DIR%" (
@@ -65,10 +90,10 @@ if /I "%CONFIG%"=="docs" (
 
 echo === CMake configure (build dir: %BUILD_DIR%) ===
 if "%GENERATOR%"=="" (
-    cmake -S . -B "%BUILD_DIR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
+    cmake -S . -B "%BUILD_DIR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON -D BUILD_VULKAN=%BUILD_VULKAN%
 ) else (
     echo Using generator: %GENERATOR%
-    cmake -S . -B "%BUILD_DIR%" -G "%GENERATOR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON
+    cmake -S . -B "%BUILD_DIR%" -G "%GENERATOR%" -D CMAKE_BUILD_TYPE=%CONFIG% -D BUILD_DOCUMENTATION=ON -D BUILD_VULKAN=%BUILD_VULKAN%
 )
 if errorlevel 1 (
     echo CMake configuration failed.
@@ -99,10 +124,12 @@ if /I "%CONFIG%"=="Debug" (
     echo Executables are available in: %DIST_DIR%\debug\
     if exist "%DIST_DIR%\debug\pong.exe" echo   - pong.exe (console version)
     if exist "%DIST_DIR%\debug\pong_win.exe" echo   - pong_win.exe (Windows GUI version)
+    if exist "%DIST_DIR%\debug\pong_vulkan.exe" echo   - pong_vulkan.exe (Vulkan version)
 ) else (
     echo Executables are available in: %DIST_DIR%\release\
     if exist "%DIST_DIR%\release\pong.exe" echo   - pong.exe (console version)
     if exist "%DIST_DIR%\release\pong_win.exe" echo   - pong_win.exe (Windows GUI version)
+    if exist "%DIST_DIR%\release\pong_vulkan.exe" echo   - pong_vulkan.exe (Vulkan version)
 )
 endlocal
 exit /b 0

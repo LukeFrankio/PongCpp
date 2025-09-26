@@ -42,6 +42,81 @@ if (WIN32)
     # nothing required
 endif()
 
+# Vulkan renderer option
+option(BUILD_VULKAN "Build Vulkan renderer with Slang shaders" OFF)
+
+# Vulkan renderer implementation
+if(BUILD_VULKAN AND WIN32)
+    # Find Vulkan SDK
+    find_package(Vulkan QUIET)
+    
+    # Find Slang SDK - check SLANG_DIR first, then within Vulkan SDK
+    find_path(SLANG_INCLUDE_DIR slang.h
+        PATHS 
+            $ENV{SLANG_DIR}/include
+            $ENV{VULKAN_SDK}/Include/slang  # Slang included in Vulkan SDK
+            ${Vulkan_INCLUDE_DIRS}/slang    # Use Vulkan include dirs
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/slang/include
+    )
+    find_library(SLANG_LIBRARY slang
+        PATHS 
+            $ENV{SLANG_DIR}/lib
+            $ENV{SLANG_DIR}/bin  # Slang sometimes puts DLLs here
+            $ENV{VULKAN_SDK}/Lib  # Slang included in Vulkan SDK
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/slang/lib
+    )
+    
+    if(Vulkan_FOUND AND SLANG_INCLUDE_DIR AND SLANG_LIBRARY)
+        message(STATUS "Vulkan SDK found: ${Vulkan_LIBRARIES}")
+        message(STATUS "Slang SDK found: ${SLANG_LIBRARY}")
+        
+        add_executable(pong_vulkan
+            src/win/main_vulkan.cpp
+            src/win/game_vulkan.cpp
+            src/vulkan/vulkan_renderer.cpp
+            src/vulkan/vulkan_context.cpp
+            src/vulkan/vulkan_memory.cpp
+            src/vulkan/slang_compiler.cpp
+            src/vulkan/vulkan_math.h
+            src/core/game_core.cpp
+            src/win/settings.cpp
+            src/win/highscores.cpp
+        )
+        
+        target_link_libraries(pong_vulkan PRIVATE 
+            ${Vulkan_LIBRARIES}
+            ${SLANG_LIBRARY}
+            user32 
+            gdi32
+        )
+        target_include_directories(pong_vulkan PRIVATE 
+            ${Vulkan_INCLUDE_DIRS}
+            ${SLANG_INCLUDE_DIR}
+        )
+        set_target_properties(pong_vulkan PROPERTIES WIN32_EXECUTABLE YES)
+        add_dependencies(pong_vulkan setup-dist)
+        
+        # Custom target for copying Slang shaders to output directory
+        add_custom_target(compile-shaders
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/shaders
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders ${DIST_DIR}/debug
+            COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders ${DIST_DIR}/release
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            COMMENT "Compiling Slang shaders"
+        )
+        add_dependencies(pong_vulkan compile-shaders)
+        
+    else()
+        if(NOT Vulkan_FOUND)
+            message(WARNING "Vulkan SDK not found. Set VULKAN_SDK environment variable.")
+        endif()
+        if(NOT SLANG_INCLUDE_DIR OR NOT SLANG_LIBRARY)
+            message(WARNING "Slang SDK not found. Set SLANG_DIR environment variable.")
+        endif()
+        message(WARNING "Vulkan renderer disabled due to missing dependencies.")
+    endif()
+endif()
+
 # Documentation generation with Doxygen
 option(BUILD_DOCUMENTATION "Create and install the HTML based API documentation (requires Doxygen)" OFF)
 
@@ -106,16 +181,24 @@ message(STATUS "PongCpp build configuration:")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Documentation: ${BUILD_DOCUMENTATION}")
+message(STATUS "  Vulkan renderer: ${BUILD_VULKAN}")
 message(STATUS "  Output directory: ${DIST_DIR}")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "  Console target: pong -> dist/debug/pong.exe")
+else()
+    message(STATUS "  Console target: pong -> dist/release/pong.exe")
+endif()
 if(WIN32)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         message(STATUS "  Windows GUI target: pong_win -> dist/debug/pong_win.exe")
     else()
         message(STATUS "  Windows GUI target: pong_win -> dist/release/pong_win.exe")
     endif()
-endif()
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message(STATUS "  Console target: pong -> dist/debug/pong.exe")
-else()
-    message(STATUS "  Console target: pong -> dist/release/pong.exe")
+    if(BUILD_VULKAN AND TARGET pong_vulkan)
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            message(STATUS "  Vulkan target: pong_vulkan -> dist/debug/pong_vulkan.exe")
+        else()
+            message(STATUS "  Vulkan target: pong_vulkan -> dist/release/pong_vulkan.exe")
+        endif()
+    endif()
 endif()
