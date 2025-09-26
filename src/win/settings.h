@@ -18,6 +18,17 @@
 struct Settings {
     int control_mode = 0;  ///< Control mode: 0=keyboard, 1=mouse
     int ai = 1;           ///< AI difficulty: 0=easy, 1=normal, 2=hard
+    int renderer = 0;     ///< 0=classic GDI, 1=path tracer
+    int quality = 1;      ///< Deprecated quality preset (legacy)
+    // New path tracer parameter sliders (persisted as ints for simplicity)
+    int pt_rays_per_frame = 2000;     ///< Total primary rays per frame (distributed over render target)
+    int pt_max_bounces = 3;           ///< Maximum bounces (1-8 reasonable)
+    int pt_internal_scale = 60;       ///< Internal resolution percentage (25..100)
+    int pt_roughness = 15;            ///< Metallic roughness percent (0..100)
+    int pt_emissive = 100;            ///< Emissive intensity percent for ball (50..300 mapped)
+    int pt_accum_alpha = 12;          ///< Temporal accumulation alpha percent (1..50 => 0.01..0.50)
+    int pt_denoise_strength = 70;     ///< Spatial denoise strength percent (0..100)
+    int pt_force_full_pixel_rays = 0; ///< 1 = force at least 1 primary ray per pixel at internal resolution
 };
 
 /**

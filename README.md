@@ -14,6 +14,53 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 ### Windows GUI Version
 
 - Native Win32/GDI windowed interface
+
+### Experimental Path Tracing Renderer (Win32 Only)
+
+An optional pure CPU software path tracer (still only Win32 + GDI `StretchDIBits`) provides a soft glowy aesthetic. It is fully parameter‑driven (no fixed quality presets anymore).
+
+Configuration menu entries:
+
+- Renderer: Classic | Path Tracer
+- Path Tracer Settings… (opens modal with live sliders)
+
+Current path tracer parameters (all persisted in `settings.json`):
+
+| Setting (UI Label)        | JSON Field                | Range / Units                  | Effect |
+|---------------------------|---------------------------|--------------------------------|--------|
+| Rays / Frame              | `pt_rays_per_frame`       | 100 – 200000 (step 100)        | Total ray budget per frame (or per pixel if force toggle ON). Higher = less noise, more CPU time. |
+| Max Bounces               | `pt_max_bounces`          | 1 – 8                          | Path depth. More bounces capture more indirect light but cost more rays. |
+| Internal Scale %          | `pt_internal_scale`       | 25 – 100 %                     | Internal rendering resolution relative to window. Lower = faster, blurrier. |
+| Metal Roughness %         | `pt_roughness`            | 0 – 100 %                      | 0 = mirror paddles, 100 = very rough (diffuse-ish) reflections. |
+| Emissive %                | `pt_emissive`             | 50 – 300 %                     | Scales ball light intensity (100% = base). |
+| Accum Alpha %             | `pt_accum_alpha`          | 1 – 50 %                       | Temporal blend factor (EMA). Higher = faster convergence but more ghosting; 10–20% typical. |
+| Denoise %                 | `pt_denoise_strength`     | 0 – 100 %                      | Strength of 3x3 spatial blur (0 = off). |
+| Force 1 ray / pixel (ON)  | `pt_force_full_pixel_rays`| 0 / 1                          | Interpret Rays/Frame as rays PER pixel instead of a global pool. Good for consistent sampling at small resolutions. |
+
+Notes:
+
+- Changing any parameter automatically resets the accumulation history to avoid stale noise patterns.
+- When Force 1 ray/pixel is OFF the ray budget is evenly distributed (integer division) and may yield <1 spp for very large windows (still at least 1 ray/pixel via min). Turn it ON if you prefer stable sampling per pixel (at the cost of potentially large total ray counts).
+- Metallic paddles give clearer silhouettes than the earlier glass prototype while still producing highlight variety via roughness.
+
+Implementation details:
+
+- Pure C++17 + Win32 (no GPU APIs)
+- Internal low‑resolution float buffer, upscaled each frame
+- Dynamic samples per pixel derived from ray budget and internal resolution
+- Temporal accumulation (exponential moving average) + optional 3×3 spatial denoise
+- Simple materials: diffuse walls, emissive sphere, metallic paddles with roughness perturbation
+- Classic outline overlay (paddles + ball highlight) for crisp gameplay silhouettes
+
+Performance tips:
+
+- Start with Internal Scale 50–70% and ~5000–15000 Rays/Frame.
+- Increase Accum Alpha slowly if you want faster convergence; too high causes visible ghost trails.
+- Use Denoise 50–80% for a good quality/performance compromise.
+- Large windows + Force 1 ray/pixel + high Rays/Frame can become very CPU heavy—dial one back if FPS drops.
+
+Legacy fields `quality` and presets remain in the JSON for backward compatibility but are ignored by the new renderer logic.
+
 - DPI awareness for high-resolution displays
 - Multiple control modes:
   - **Keyboard**: W/S keys for paddle control
@@ -114,17 +161,26 @@ cmake --build . --config Debug
 
 ## Configuration
 
-The Windows GUI version supports persistent configuration stored in `settings.json`:
+The Windows GUI version stores persistent configuration in `settings.json`. Example (fields trimmed):
 
-```json
+```jsonc
 {
-  "control_mode": 0,
-  "ai": 1
+  "control_mode": 0,          // 0=keyboard,1=mouse
+  "ai": 1,                    // 0=easy,1=normal,2=hard
+  "renderer": 1,              // 0=classic,1=path tracer
+  "quality": 1,               // legacy (ignored by path tracer)
+  "pt_rays_per_frame": 8000,
+  "pt_max_bounces": 3,
+  "pt_internal_scale": 60,
+  "pt_roughness": 15,
+  "pt_emissive": 100,
+  "pt_accum_alpha": 12,
+  "pt_denoise_strength": 70,
+  "pt_force_full_pixel_rays": 0
 }
 ```
 
-- `control_mode`: 0 = Keyboard, 1 = Mouse
-- `ai`: 0 = Easy, 1 = Normal, 2 = Hard
+Adjust values via the in‑game Path Tracer Settings modal (recommended) rather than manual edits.
 
 ## High Scores
 

@@ -30,7 +30,9 @@ if (WIN32)
         src/win/main_win.cpp
         src/win/highscores.cpp
         src/win/settings.cpp
+        src/win/soft_renderer.cpp
         src/win/game_win.h
+        src/win/soft_renderer.h
         src/core/game_core.cpp
     )
     target_link_libraries(pong_win PRIVATE user32 gdi32)

@@ -23,6 +23,7 @@
 #include "../core/game_core.h"
 #include "highscores.h"
 #include "settings.h"
+#include "soft_renderer.h"
 
 /// Window class name for registration
 static const wchar_t CLASS_NAME[] = L"PongWindowClass";
@@ -143,7 +144,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 int mx = (int)(short)LOWORD(lParam);
                 int my = (int)(short)HIWORD(lParam);
                 int w = st->width; int h = st->height;
-                int baseX = w/2 - 150;
+                int baseX = w/2 - 170; // adjusted for wider menu
                 // compute dpi/ui_scale locally (WindowProc can't access run-time ui_scale)
                 int dpi_local = 96;
                 HMODULE user32_local = LoadLibraryW(L"user32.dll");
@@ -153,10 +154,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     FreeLibrary(user32_local);
                 }
                 double ui_scale_local = (double)dpi_local / 96.0;
-                int ys[5] = { (int)(120 * ui_scale_local + 0.5), (int)(180 * ui_scale_local + 0.5), (int)(260 * ui_scale_local + 0.5), (int)(320 * ui_scale_local + 0.5), (int)(380 * ui_scale_local + 0.5) };
-                for (int i=0;i<5;i++) {
+                // Updated to 7 items (control, ai, renderer, quality, start, highscores, quit)
+                int ys[7] = { (int)(120 * ui_scale_local + 0.5), (int)(170 * ui_scale_local + 0.5), (int)(220 * ui_scale_local + 0.5), (int)(270 * ui_scale_local + 0.5), (int)(330 * ui_scale_local + 0.5), (int)(380 * ui_scale_local + 0.5), (int)(430 * ui_scale_local + 0.5) };
+                for (int i=0;i<7;i++) {
                     int pad = (int)max(6.0, 10.0 * ui_scale_local);
-                    int wbox = (int)max(260.0, 260.0 * ui_scale_local);
+                    int wbox = (int)max(300.0, 300.0 * ui_scale_local);
                     RECT rb = { baseX - pad, ys[i] - (int)(6*ui_scale_local + 0.5), baseX + wbox, ys[i] + (int)(34*ui_scale_local + 0.5) };
                     if (mx >= rb.left && mx <= rb.right && my >= rb.top && my <= rb.bottom) {
                         st->menu_click_index = i;
@@ -247,6 +249,8 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     // config
     enum ControlMode { CTRL_KEYBOARD=0, CTRL_MOUSE=1 } ctrl = CTRL_KEYBOARD;
     enum AIDifficulty { AI_EASY=0, AI_NORMAL=1, AI_HARD=2 } ai = AI_NORMAL;
+    enum RendererMode { R_CLASSIC=0, R_PATH=1 } rendererMode = R_CLASSIC;
+    int quality = 1; // legacy (unused)
 
     // scores & high score handling via HighScores
     HighScores hsMgr;
@@ -264,6 +268,8 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     // apply loaded settings
     if (settings.control_mode==1) ctrl = CTRL_MOUSE;
     if (settings.ai==0) ai = AI_EASY; else if (settings.ai==2) ai = AI_HARD; else ai = AI_NORMAL;
+    if (settings.renderer==1) rendererMode = R_PATH; else rendererMode = R_CLASSIC;
+    if (settings.quality>=0 && settings.quality<=2) quality = settings.quality;
 
     bool settings_changed = false;
     std::wstring hsPath = exeDir + L"highscores.json";
@@ -272,7 +278,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
 
     // Improved config menu: keyboard navigation via state.key_down and simple selection
     bool inMenu = true;
-    int menuIndex = 0; // 0: control, 1: ai, 2: start, 3: manage highscores, 4: quit
+    int menuIndex = 0; // 0: control,1: ai,2: renderer,3: PT Settings,4: start,5: highscores,6: quit
     auto clamp_menu = [&](int &v, int lo, int hi){ if (v<lo) v=lo; if (v>hi) v=hi; };
     // prepare a reusable modal function (declared here so both keyboard and mouse paths can call it)
     auto manageHighScoresModal = [&]() {
@@ -466,11 +472,11 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         int hoverIndex = -1;
         {
             int mx = state.mouse_x; int my = state.mouse_y;
-            int baseX = winW/2 - (int)round(150*ui_scale);
-            int ys[5] = { (int)(120 * ui_scale + 0.5), (int)(180 * ui_scale + 0.5), (int)(260 * ui_scale + 0.5), (int)(320 * ui_scale + 0.5), (int)(380 * ui_scale + 0.5) };
-            for (int i=0;i<5;i++) {
+            int baseX = winW/2 - (int)round(170*ui_scale);
+            int ys[7] = { (int)(120 * ui_scale + 0.5), (int)(170 * ui_scale + 0.5), (int)(220 * ui_scale + 0.5), (int)(270 * ui_scale + 0.5), (int)(330 * ui_scale + 0.5), (int)(380 * ui_scale + 0.5), (int)(430 * ui_scale + 0.5) };
+            for (int i=0;i<7;i++) {
                 int pad = (int)max(6.0, 10.0 * ui_scale);
-                int wbox = (int)max(260.0, 260.0 * ui_scale);
+                int wbox = (int)max(300.0, 300.0 * ui_scale);
                 RECT rb = { baseX - pad, ys[i] - (int)(6*ui_scale + 0.5), baseX + wbox, ys[i] + (int)(34*ui_scale + 0.5) };
                 if (mx >= rb.left && mx <= rb.right && my >= rb.top && my <= rb.bottom) { hoverIndex = i; break; }
             }
@@ -498,11 +504,13 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             DrawTextCentered(memDC, text, (rb.left + rb.right)/2, (rb.top + rb.bottom)/2);
         };
 
-        drawOption(0, (ctrl==CTRL_KEYBOARD)?L"Control: Keyboard":L"Control: Mouse (follow Y)", winW/2 - (int)round(150*ui_scale), (int)round(120*ui_scale));
-        drawOption(1, (ai==AI_EASY)?L"AI: Easy":(ai==AI_NORMAL)?L"AI: Normal":L"AI: Hard", winW/2 - (int)round(150*ui_scale), (int)round(180*ui_scale));
-        drawOption(2, L"Start Game", winW/2 - (int)round(150*ui_scale), (int)round(260*ui_scale));
-        drawOption(3, L"Manage High Scores", winW/2 - (int)round(150*ui_scale), (int)round(320*ui_scale));
-        drawOption(4, L"Quit", winW/2 - (int)round(150*ui_scale), (int)round(380*ui_scale));
+    drawOption(0, (ctrl==CTRL_KEYBOARD)?L"Control: Keyboard":L"Control: Mouse", winW/2 - (int)round(170*ui_scale), (int)round(120*ui_scale));
+    drawOption(1, (ai==AI_EASY)?L"AI: Easy":(ai==AI_NORMAL)?L"AI: Normal":L"AI: Hard", winW/2 - (int)round(170*ui_scale), (int)round(170*ui_scale));
+    drawOption(2, (rendererMode==R_CLASSIC)?L"Renderer: Classic":L"Renderer: Path Tracer", winW/2 - (int)round(170*ui_scale), (int)round(220*ui_scale));
+    drawOption(3, L"Path Tracer Settings...", winW/2 - (int)round(170*ui_scale), (int)round(270*ui_scale));
+    drawOption(4, L"Start Game", winW/2 - (int)round(170*ui_scale), (int)round(330*ui_scale));
+    drawOption(5, L"Manage High Scores", winW/2 - (int)round(170*ui_scale), (int)round(380*ui_scale));
+    drawOption(6, L"Quit", winW/2 - (int)round(170*ui_scale), (int)round(430*ui_scale));
 
         // show top 5 highscores on right
         SetTextColor(memDC, RGB(180,180,220));
@@ -517,39 +525,125 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         BitBlt(hdc, 0, 0, winW, winH, memDC, 0, 0, SRCCOPY);
 
         // handle simple keyboard navigation and mouse clicks
-        if (state.key_down[VK_DOWN]) { menuIndex++; clamp_menu(menuIndex, 0, 4); state.key_down[VK_DOWN]=false; }
-        if (state.key_down[VK_UP]) { menuIndex--; clamp_menu(menuIndex, 0, 4); state.key_down[VK_UP]=false; }
+        if (state.key_down[VK_DOWN]) { menuIndex++; clamp_menu(menuIndex, 0, 6); state.key_down[VK_DOWN]=false; }
+        if (state.key_down[VK_UP]) { menuIndex--; clamp_menu(menuIndex, 0, 6); state.key_down[VK_UP]=false; }
         if (state.key_down[VK_LEFT]) {
             if (menuIndex==0) { ctrl = CTRL_KEYBOARD; settings.control_mode = 0; settings_changed = true; }
             else if (menuIndex==1) { if (ai>0) { ai=(AIDifficulty)(ai-1); settings.ai = ai; settings_changed = true; } }
+            else if (menuIndex==2) { rendererMode = R_CLASSIC; settings.renderer = 0; settings_changed = true; }
+            else if (menuIndex==3) { }
             state.key_down[VK_LEFT]=false;
         }
         if (state.key_down[VK_RIGHT]) {
             if (menuIndex==0) { ctrl = CTRL_MOUSE; settings.control_mode = 1; settings_changed = true; }
             else if (menuIndex==1) { if (ai<2) { ai=(AIDifficulty)(ai+1); settings.ai = ai; settings_changed = true; } }
+            else if (menuIndex==2) { rendererMode = R_PATH; settings.renderer = 1; settings_changed = true; }
+            else if (menuIndex==3) { }
             state.key_down[VK_RIGHT]=false;
         }
         if (state.key_down[VK_RETURN]) {
             state.key_down[VK_RETURN]=false;
-            if (menuIndex==2) { inMenu = false; state.ui_mode = 0; }
-            else if (menuIndex==3) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
-            else if (menuIndex==4) { state.running = false; break; }
+            if (menuIndex==4) { inMenu = false; state.ui_mode = 0; }
+            else if (menuIndex==5) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
+            else if (menuIndex==6) { state.running = false; break; }
         }
         if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; state.running=false; break; }
 
         // process mouse clicks (menu_click_index)
         if (state.menu_click_index != -1) {
-            int clicked = state.menu_click_index;
-            state.menu_click_index = -1;
-            if (clicked == 0) { // control option toggles
-                ctrl = (ctrl==CTRL_KEYBOARD) ? CTRL_MOUSE : CTRL_KEYBOARD;
-                settings.control_mode = (ctrl==CTRL_MOUSE)?1:0; settings_changed = true;
-            } else if (clicked == 1) { // cycle AI
-                ai = (AIDifficulty)((ai + 1) % 3);
-                settings.ai = ai; settings_changed = true;
-            } else if (clicked == 2) { inMenu = false; }
-            else if (clicked == 3) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
-            else if (clicked == 4) { state.running = false; break; }
+            int clicked = state.menu_click_index; state.menu_click_index = -1;
+            switch(clicked) {
+                case 0: ctrl = (ctrl==CTRL_KEYBOARD)?CTRL_MOUSE:CTRL_KEYBOARD; settings.control_mode = (ctrl==CTRL_MOUSE)?1:0; settings_changed=true; break;
+                case 1: ai = (AIDifficulty)((ai+1)%3); settings.ai = ai; settings_changed=true; break;
+                case 2: rendererMode = (rendererMode==R_CLASSIC)?R_PATH:R_CLASSIC; settings.renderer=(rendererMode==R_PATH)?1:0; settings_changed=true; break;
+                case 3: {
+                    // Open path tracer settings modal
+                    if (rendererMode==R_PATH) {
+                        // Modal loop
+                        state.ui_mode = 2; bool editing=true; int sel=0; const int itemCount=8; // 7 sliders + checkbox
+                        auto clampSel=[&](int &v){ if(v<0)v=0; if(v>itemCount-1)v=itemCount-1; };
+                        while (editing && state.running) {
+                            MSG m; while (PeekMessage(&m,nullptr,0,0,PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m);}                        
+                            int w=state.width, h=state.height; RECT bg={0,0,w,h}; HBRUSH b=CreateSolidBrush(RGB(15,15,25)); FillRect(memDC,&bg,b); DeleteObject(b);
+                            SetBkMode(memDC,TRANSPARENT); SetTextColor(memDC, RGB(235,235,245));
+                            DrawTextCentered(memDC,L"Path Tracer Settings", w/2, (int)round(40*ui_scale));
+                            struct SliderInfo { const wchar_t* label; int *val; int minv; int maxv; int step; };                            
+                            SliderInfo sliders[] = {
+                                {L"Rays / Frame", &settings.pt_rays_per_frame, 100, 200000, 100},
+                                {L"Max Bounces", &settings.pt_max_bounces, 1, 8, 1},
+                                {L"Internal Scale %", &settings.pt_internal_scale, 25, 100, 1},
+                                {L"Metal Roughness %", &settings.pt_roughness, 0, 100, 1},
+                                {L"Emissive %", &settings.pt_emissive, 50, 300, 5},
+                                {L"Accum Alpha %", &settings.pt_accum_alpha, 1, 50, 1},
+                                {L"Denoise %", &settings.pt_denoise_strength, 0, 100, 1}
+                            };
+                            int baseY = (int)round(90*ui_scale);
+                            int rowH = (int)round(40*ui_scale);
+                            int barW = (int)round(400*ui_scale);
+                            int barH = (int)round(10*ui_scale);
+                            int centerX = w/2;
+                            for (int i=0;i<7;i++) {
+                                int y = baseY + i*rowH;
+                                bool hot = (sel==i);
+                                SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210));
+                                std::wstring label = std::wstring(sliders[i].label) + L": " + std::to_wstring(*sliders[i].val);
+                                DrawTextCentered(memDC, label, centerX, y);
+                                // bar rect
+                                int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                                RECT bar={bx,by,bx+barW,by+barH}; HBRUSH barBg=CreateSolidBrush(RGB(40,40,60)); FillRect(memDC,&bar,barBg); DeleteObject(barBg);
+                                double t = double(*sliders[i].val - sliders[i].minv)/(sliders[i].maxv - sliders[i].minv);
+                                if(t<0)t=0; if(t>1)t=1;
+                                RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH barFill=CreateSolidBrush(hot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,barFill); DeleteObject(barFill);
+                            }
+                            // checkbox
+                            int cbIndex = 7; int cy = baseY + 7*rowH; bool cbHot = (sel==cbIndex);
+                            std::wstring cbTxt = std::wstring(L"Force 1 ray / pixel: ") + (settings.pt_force_full_pixel_rays?L"ON":L"OFF");
+                            SetTextColor(memDC, cbHot?RGB(255,240,160):RGB(200,200,210));
+                            DrawTextCentered(memDC, cbTxt, centerX, cy);
+                            // instructions
+                            SetTextColor(memDC, RGB(170,170,190));
+                            DrawTextCentered(memDC, L"Enter=Close  Esc=Cancel  Arrows adjust  Click+Drag bars", centerX, h - (int)round(40*ui_scale));
+                            BitBlt(hdc,0,0,w,h,memDC,0,0,SRCCOPY);
+                            // handle input
+                            if (state.key_down[VK_DOWN]) { sel++; clampSel(sel); state.key_down[VK_DOWN]=false; }
+                            if (state.key_down[VK_UP]) { sel--; clampSel(sel); state.key_down[VK_UP]=false; }
+                            if (sel < 7) {
+                                if (state.key_down[VK_LEFT]) { *sliders[sel].val = max(sliders[sel].minv, *sliders[sel].val - sliders[sel].step); state.key_down[VK_LEFT]=false; }
+                                if (state.key_down[VK_RIGHT]) { *sliders[sel].val = min(sliders[sel].maxv, *sliders[sel].val + sliders[sel].step); state.key_down[VK_RIGHT]=false; }
+                            } else if (sel==7 && (state.key_down[VK_LEFT]||state.key_down[VK_RIGHT])) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; state.key_down[VK_LEFT]=state.key_down[VK_RIGHT]=false; }
+                            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; editing=false; /* cancel changes? we already modified settings live */ }
+                            if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; editing=false; }
+                            // mouse interaction for bars
+                            if (state.mouse_pressed || state.last_click_x!=-1) {
+                                int mx = state.mouse_x; int my = state.mouse_y;
+                                for (int i=0;i<7;i++) {
+                                    int y = baseY + i*rowH;
+                                    int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                                    RECT bar={bx,by,bx+barW,by+barH};
+                                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
+                                        double t = double(mx - bar.left)/barW; if(t<0)t=0; if(t>1)t=1;
+                                        int val = sliders[i].minv + (int)std::round(t*(sliders[i].maxv - sliders[i].minv));
+                                        // snap to step
+                                        int step = sliders[i].step; val = (val/step)*step;
+                                        if (val < sliders[i].minv) val = sliders[i].minv; if (val > sliders[i].maxv) val = sliders[i].maxv;
+                                        *sliders[i].val = val; sel=i;
+                                    }
+                                }
+                                // checkbox click
+                                int cyBox = cy; RECT cbRect={centerX - (int)(220*ui_scale), cyBox - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyBox + (int)(16*ui_scale)};
+                                if (state.last_click_x!=-1 && state.last_click_x>=cbRect.left && state.last_click_x<=cbRect.right && state.last_click_y>=cbRect.top && state.last_click_y<=cbRect.bottom) {
+                                    settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; sel=7; state.last_click_x=-1; state.last_click_y=-1;
+                                }
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+                        }
+                        state.ui_mode = 1; settings_changed = true; // mark for save
+                    }
+                } break;
+                case 4: inMenu=false; break;
+                case 5: manageHighScoresModal(); hsMgr.save(hsPath, highList); break;
+                case 6: state.running=false; break;
+            }
         }
 
     // leaving menu; ensure UI mode returns to gameplay
@@ -561,6 +655,21 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+
+    // Initialize software renderer here (after menu selection)
+    SoftRenderer soft;
+    SRConfig srCfg;
+    srCfg.enablePathTracing = (rendererMode==R_PATH);
+    srCfg.raysPerFrame = settings.pt_rays_per_frame;
+    srCfg.maxBounces = settings.pt_max_bounces;
+    srCfg.internalScalePct = settings.pt_internal_scale;
+    srCfg.metallicRoughness = settings.pt_roughness / 100.0f;
+    srCfg.emissiveIntensity = settings.pt_emissive / 100.0f; // 100% == 1.0
+    srCfg.accumAlpha = settings.pt_accum_alpha / 100.0f;
+    srCfg.denoiseStrength = settings.pt_denoise_strength / 100.0f;
+    srCfg.forceFullPixelRays = settings.pt_force_full_pixel_rays!=0;
+    soft.configure(srCfg);
+    soft.resize(state.width, state.height);
 
     while (state.running) {
         // message pump
@@ -594,11 +703,82 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         }
         double ui_scale = (double)dpi_now / 96.0;
 
-        HBRUSH bg = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        RECT r = {0,0,winW,winH};
-        FillRect(memDC, &r, bg);
+        // Resize renderer if needed
+        if (winW != state.width || winH != state.height) {
+            soft.resize(state.width, state.height);
+            soft.resetHistory();
+        }
 
-    // draw center dashed line with glow (two passes)
+        // Expose game state for rendering and UI (move out of renderer-specific blocks so it's available later)
+        GameState &gs = core.state();
+
+        // ----- Input & Simulation (runs for both renderers) -----
+        if (ctrl == CTRL_KEYBOARD) {
+            if (state.key_down['W']) core.move_left_by(-120.0 * dt);
+            if (state.key_down['S']) core.move_left_by(120.0 * dt);
+        } else {
+            double my = (double)state.mouse_y / winH * gs.gh;
+            core.set_left_y(my - gs.paddle_h/2.0);
+        }
+        if (state.key_down[VK_UP]) core.move_right_by(-120.0 * dt);
+        if (state.key_down[VK_DOWN]) core.move_right_by(120.0 * dt);
+
+        if (ai == AI_EASY) core.set_ai_speed(0.6);
+        else if (ai == AI_NORMAL) core.set_ai_speed(1.0);
+        else core.set_ai_speed(1.6);
+        core.update(dt);
+
+        // Detect quality / renderer changes (from settings file or future hotkeys) - not currently dynamic but safe guard
+        // (If we later allow runtime toggle outside menu, we can set a flag to trigger resetHistory())
+
+        if (rendererMode == R_PATH) {
+             // Update SRConfig from current settings if changed
+             bool changed=false;
+             auto applyIf=[&](auto &dst, auto v){ if (dst!=v){ dst=v; changed=true;} };
+            applyIf(srCfg.raysPerFrame, settings.pt_rays_per_frame);
+            applyIf(srCfg.maxBounces, settings.pt_max_bounces);
+            applyIf(srCfg.internalScalePct, settings.pt_internal_scale);
+            applyIf(srCfg.metallicRoughness, settings.pt_roughness/100.0f);
+            applyIf(srCfg.emissiveIntensity, settings.pt_emissive/100.0f);
+            applyIf(srCfg.accumAlpha, settings.pt_accum_alpha/100.0f);
+            applyIf(srCfg.denoiseStrength, settings.pt_denoise_strength/100.0f);
+            bool forceFlag = settings.pt_force_full_pixel_rays!=0; applyIf(srCfg.forceFullPixelRays, forceFlag);
+            if (!srCfg.enablePathTracing) { srCfg.enablePathTracing=true; changed=true; }
+             if (changed) { soft.configure(srCfg); soft.resetHistory(); }
+            soft.render(core.state());
+            // Blit software renderer output into memDC
+            const BITMAPINFO &bi = soft.getBitmapInfo();
+            const void *pix = soft.pixels();
+            StretchDIBits(memDC, 0,0, winW, winH, 0,0, winW, winH, pix, &bi, DIB_RGB_COLORS, SRCCOPY);
+            // Overlay paddles & ball outlines for clearer gameplay feedback
+            GameState &ogs = core.state();
+            const int gw = 80, gh = 24;
+            auto mapX = [&](double gx){ return (int)(gx / gw * winW); };
+            auto mapY = [&](double gy){ return (int)(gy / gh * winH); };
+            HPEN padPen = CreatePen(PS_SOLID, max(1,(int)round(2*ui_scale)), RGB(200,220,255));
+            HPEN oldP = (HPEN)SelectObject(memDC, padPen);
+            HBRUSH hollow = (HBRUSH)GetStockObject(NULL_BRUSH);
+            HBRUSH oldB = (HBRUSH)SelectObject(memDC, hollow);
+            // Left paddle
+            int lp1 = mapX(1); int lp2 = mapX(3);
+            int lpt = mapY(ogs.left_y); int lpb = mapY(ogs.left_y + ogs.paddle_h);
+            RoundRect(memDC, lp1, lpt, lp2, lpb, 8, 8);
+            // Right paddle
+            int rp1 = mapX(gw-3); int rp2 = mapX(gw-1);
+            int rpt = mapY(ogs.right_y); int rpb = mapY(ogs.right_y + ogs.paddle_h);
+            RoundRect(memDC, rp1, rpt, rp2, rpb, 8, 8);
+            // Ball highlight circle
+            int bx = mapX(ogs.ball_x); int by = mapY(ogs.ball_y); int br = max(4,(int)round(8*ui_scale));
+            Ellipse(memDC, bx-br, by-br, bx+br, by+br);
+            SelectObject(memDC, oldP); SelectObject(memDC, oldB);
+            DeleteObject(padPen);
+        } else {
+            HBRUSH bg = (HBRUSH)GetStockObject(BLACK_BRUSH);
+            RECT r = {0,0,winW,winH};
+            FillRect(memDC, &r, bg);
+        }
+
+    // draw center dashed line with glow (two passes) (always on top of path traced background)
     int thin_w = max(1, (int)round(2 * ui_scale));
     int glow_w = max(3, (int)round(6 * ui_scale));
     HPEN penThin = CreatePen(PS_SOLID, thin_w, RGB(200,200,200));
@@ -610,32 +790,12 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     SelectObject(memDC, penThin);
     for (int y=0;y<winH;y+=dash_h) { MoveToEx(memDC, winW/2, y, NULL); LineTo(memDC, winW/2, y+dash_seg); }
 
-        // draw paddles and ball as simple rectangles/circles using normalized coordinates
+        if (rendererMode == R_CLASSIC) {
+        // draw paddles and ball only in classic mode; path tracer already rendered them
         // We'll map game coordinates (width=80,height=24) to window size
     const int gw = 80, gh = 24;
     auto mapX = [&](double gx){ return (int)(gx / gw * winW); };
     auto mapY = [&](double gy){ return (int)(gy / gh * winH); };
-
-    GameState &gs = core.state();
-
-    // input: use window state instead of polling
-        if (ctrl == CTRL_KEYBOARD) {
-            if (state.key_down['W']) core.move_left_by(-120.0 * dt);
-            if (state.key_down['S']) core.move_left_by(120.0 * dt);
-        } else {
-            double my = (double)state.mouse_y / winH * gs.gh;
-            core.set_left_y(my - gs.paddle_h/2.0);
-        }
-        if (state.key_down[VK_UP]) core.move_right_by(-120.0 * dt);
-        if (state.key_down[VK_DOWN]) core.move_right_by(120.0 * dt);
-
-    // core.update() enforces clamping; nothing to do here
-
-        // set AI speed into core then update
-        if (ai == AI_EASY) core.set_ai_speed(0.6);
-        else if (ai == AI_NORMAL) core.set_ai_speed(1.0);
-        else core.set_ai_speed(1.6);
-        core.update(dt);
 
     // draw left paddle as thicker rounded rect
     RECT pr;
@@ -682,6 +842,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     SelectObject(memDC, ballShade);
     Ellipse(memDC, bx-ball_px_r/2, by-ball_px_r/2, bx+ball_px_r/2, by+ball_px_r/2);
     DeleteObject(ballBrush); DeleteObject(ballShade);
+    } // end classic renderer objects
 
     // draw scores
     std::wstring scoreTxt = std::to_wstring(gs.score_left) + L" - " + std::to_wstring(gs.score_right);

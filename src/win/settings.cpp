@@ -24,7 +24,7 @@ Settings SettingsManager::load(const std::wstring &path) {
     std::ifstream ifs(p, std::ios::binary);
     if (!ifs) return s;
     std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    // naive parsing: find "control_mode": <num>, "ai": <num>
+    // naive parsing: find numeric tokens for known keys
     auto findNum = [&](const std::string &key)->int{
         size_t p = raw.find(key);
         if (p==std::string::npos) return -1;
@@ -34,6 +34,17 @@ Settings SettingsManager::load(const std::wstring &path) {
     };
     int cm = findNum("control_mode"); if (cm>=0) s.control_mode = cm;
     int ai = findNum("\"ai\""); if (ai>=0) s.ai = ai;
+    int rend = findNum("renderer"); if (rend>=0) s.renderer = rend;
+    int qual = findNum("quality"); if (qual>=0) s.quality = qual;
+    auto loadOpt = [&](const char* key, int &dst){ int v = findNum(key); if (v>=0) dst = v; };
+    loadOpt("pt_rays_per_frame", s.pt_rays_per_frame);
+    loadOpt("pt_max_bounces", s.pt_max_bounces);
+    loadOpt("pt_internal_scale", s.pt_internal_scale);
+    loadOpt("pt_roughness", s.pt_roughness);
+    loadOpt("pt_emissive", s.pt_emissive);
+    loadOpt("pt_accum_alpha", s.pt_accum_alpha);
+    loadOpt("pt_denoise_strength", s.pt_denoise_strength);
+    loadOpt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
     return s;
 }
 
@@ -43,7 +54,17 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     if (!ofs) return false;
     ofs << "{\n";
     ofs << "  \"control_mode\": " << s.control_mode << ",\n";
-    ofs << "  \"ai\": " << s.ai << "\n";
+    ofs << "  \"ai\": " << s.ai << ",\n";
+    ofs << "  \"renderer\": " << s.renderer << ",\n";
+    ofs << "  \"quality\": " << s.quality << ",\n"; // legacy
+    ofs << "  \"pt_rays_per_frame\": " << s.pt_rays_per_frame << ",\n";
+    ofs << "  \"pt_max_bounces\": " << s.pt_max_bounces << ",\n";
+    ofs << "  \"pt_internal_scale\": " << s.pt_internal_scale << ",\n";
+    ofs << "  \"pt_roughness\": " << s.pt_roughness << ",\n";
+    ofs << "  \"pt_emissive\": " << s.pt_emissive << ",\n";
+    ofs << "  \"pt_accum_alpha\": " << s.pt_accum_alpha << ",\n";
+    ofs << "  \"pt_denoise_strength\": " << s.pt_denoise_strength << ",\n";
+    ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << "\n";
     ofs << "}\n";
     return true;
 }
