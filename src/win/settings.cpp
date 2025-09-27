@@ -45,6 +45,10 @@ Settings SettingsManager::load(const std::wstring &path) {
     loadOpt("pt_accum_alpha", s.pt_accum_alpha);
     loadOpt("pt_denoise_strength", s.pt_denoise_strength);
     loadOpt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
+    loadOpt("pt_use_ortho", s.pt_use_ortho);
+    loadOpt("pt_rr_enable", s.pt_rr_enable);
+    loadOpt("pt_rr_start_bounce", s.pt_rr_start_bounce);
+    loadOpt("pt_rr_min_prob_pct", s.pt_rr_min_prob_pct);
     return s;
 }
 
@@ -64,7 +68,11 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"pt_emissive\": " << s.pt_emissive << ",\n";
     ofs << "  \"pt_accum_alpha\": " << s.pt_accum_alpha << ",\n";
     ofs << "  \"pt_denoise_strength\": " << s.pt_denoise_strength << ",\n";
-    ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << "\n";
+    ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << ",\n";
+    ofs << "  \"pt_use_ortho\": " << s.pt_use_ortho << "\n";
+    ofs << "  ,\"pt_rr_enable\": " << s.pt_rr_enable << ",\n";
+    ofs << "  \"pt_rr_start_bounce\": " << s.pt_rr_start_bounce << ",\n";
+    ofs << "  \"pt_rr_min_prob_pct\": " << s.pt_rr_min_prob_pct << "\n";
     ofs << "}\n";
     return true;
 }

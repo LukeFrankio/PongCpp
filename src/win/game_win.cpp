@@ -34,6 +34,8 @@ struct WinState {
     int dpi = 96;
     Game *game = nullptr;
     bool running = true;
+    bool request_menu = false; // when true, main loop will re-enter menu instead of quitting
+    bool suppressMenuClickDown = false; // suppress WM_LBUTTONDOWN menu_click_index (re-entry menu uses release only)
     // input state
     bool key_down[256] = {};
     int mouse_x = 0;
@@ -41,6 +43,7 @@ struct WinState {
     int last_click_x = -1;
     int last_click_y = -1;
     bool mouse_pressed = false;
+    int mouse_wheel_delta = 0; // accumulated wheel delta (120 units per notch)
     // name entry modal
     bool capture_name = false;
     std::wstring name_buf;
@@ -105,7 +108,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_KEYDOWN:
         if (st) {
             st->key_down[wParam & 0xFF] = true;
-            if (wParam == 'Q') st->running = false;
+            if (wParam == 'Q') {
+                // Only trigger menu return if currently in gameplay (ui_mode==0)
+                if (st->ui_mode == 0) st->request_menu = true;
+            }
         }
         return 0;
     case WM_CHAR:
@@ -156,13 +162,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 double ui_scale_local = (double)dpi_local / 96.0;
                 // Updated to 7 items (control, ai, renderer, quality, start, highscores, quit)
                 int ys[7] = { (int)(120 * ui_scale_local + 0.5), (int)(170 * ui_scale_local + 0.5), (int)(220 * ui_scale_local + 0.5), (int)(270 * ui_scale_local + 0.5), (int)(330 * ui_scale_local + 0.5), (int)(380 * ui_scale_local + 0.5), (int)(430 * ui_scale_local + 0.5) };
-                for (int i=0;i<7;i++) {
-                    int pad = (int)max(6.0, 10.0 * ui_scale_local);
-                    int wbox = (int)max(300.0, 300.0 * ui_scale_local);
-                    RECT rb = { baseX - pad, ys[i] - (int)(6*ui_scale_local + 0.5), baseX + wbox, ys[i] + (int)(34*ui_scale_local + 0.5) };
-                    if (mx >= rb.left && mx <= rb.right && my >= rb.top && my <= rb.bottom) {
-                        st->menu_click_index = i;
-                        break;
+                if (!st->suppressMenuClickDown) {
+                    for (int i=0;i<7;i++) {
+                        int pad = (int)max(6.0, 10.0 * ui_scale_local);
+                        int wbox = (int)max(300.0, 300.0 * ui_scale_local);
+                        RECT rb = { baseX - pad, ys[i] - (int)(6*ui_scale_local + 0.5), baseX + wbox, ys[i] + (int)(34*ui_scale_local + 0.5) };
+                        if (mx >= rb.left && mx <= rb.right && my >= rb.top && my <= rb.bottom) {
+                            st->menu_click_index = i;
+                            break;
+                        }
                     }
                 }
             }
@@ -174,6 +182,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             st->last_click_x = (int)(short)LOWORD(lParam);
             st->last_click_y = (int)(short)HIWORD(lParam);
             // ...existing code...
+        }
+        return 0;
+    case WM_MOUSEWHEEL:
+        if (st) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam); // +120 up, -120 down
+            st->mouse_wheel_delta += delta;
         }
         return 0;
     }
@@ -276,166 +290,396 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     auto highList = hsMgr.load(hsPath, 10);
     int high_score = (highList.empty()) ? 0 : highList.front().score;
 
-    // Improved config menu: keyboard navigation via state.key_down and simple selection
-    bool inMenu = true;
-    int menuIndex = 0; // 0: control,1: ai,2: renderer,3: PT Settings,4: start,5: highscores,6: quit
-    auto clamp_menu = [&](int &v, int lo, int hi){ if (v<lo) v=lo; if (v>hi) v=hi; };
-    // prepare a reusable modal function (declared here so both keyboard and mouse paths can call it)
-    auto manageHighScoresModal = [&]() {
-        state.ui_mode = 2;
-        bool manage = true; int sel = 0;
-        while (manage && state.running) {
-            // Pump messages so WindowProc updates state.last_click_*/mouse_* etc.
-            MSG msg2;
-            while (PeekMessage(&msg2, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg2); DispatchMessage(&msg2); }
+    // --- Restored main menu state & helpers (removed during prior refactor) ---
+    bool inMenu = true;                // whether we are currently inside the main menu loop
+    int  menuIndex = 0;                // currently selected menu item (0..6)
+    auto clamp_menu = [](int &v, int lo, int hi){ if (v < lo) v = lo; if (v > hi) v = hi; };
 
-            int w_now = state.width; int h_now = state.height;
-            int dpi_now2 = state.dpi;
-            if (dpi_now2 == 96) {
-                HMODULE user32_q = LoadLibraryW(L"user32.dll");
-                if (user32_q) {
-                    auto pGetDpiForWindow_q = (UINT(WINAPI*)(HWND))GetProcAddress(user32_q, "GetDpiForWindow");
-                    if (pGetDpiForWindow_q) dpi_now2 = pGetDpiForWindow_q(hwnd);
-                    FreeLibrary(user32_q);
+    // High Scores management modal (view & optional clear)
+    auto manageHighScoresModal = [&](){
+        state.ui_mode = 2; // modal
+        bool running = true;
+        while (running && state.running) {
+            MSG mm; while (PeekMessage(&mm,nullptr,0,0,PM_REMOVE)){ TranslateMessage(&mm); DispatchMessage(&mm);}            
+            int w = state.width, h = state.height; int dpi_now = state.dpi; if (dpi_now==96){ HMODULE u=LoadLibraryW(L"user32.dll"); if(u){ auto p=(UINT(WINAPI*)(HWND))GetProcAddress(u,"GetDpiForWindow"); if(p) dpi_now=p(hwnd); FreeLibrary(u);} }
+            double ui_scale_local = (double)dpi_now / 96.0; HDC mem = state.memDC; HDC hdcLocal = GetDC(hwnd);
+            RECT bg={0,0,w,h}; HBRUSH b=CreateSolidBrush(RGB(18,18,28)); FillRect(mem,&bg,b); DeleteObject(b);
+            SetBkMode(mem, TRANSPARENT);
+            SetTextColor(mem, RGB(240,240,250));
+            DrawTextCentered(mem, L"High Scores", w/2, (int)round(40*ui_scale_local));
+            if (highList.empty()) {
+                DrawTextCentered(mem, L"(No scores yet)", w/2, (int)round(90*ui_scale_local));
+            } else {
+                for (size_t i=0;i<highList.size() && i<10;i++) {
+                    std::wstring line = std::to_wstring(i+1) + L"  " + highList[i].name + L"  " + std::to_wstring(highList[i].score);
+                    DrawTextCentered(mem, line, w/2, (int)round(90*ui_scale_local + i*32*ui_scale_local));
                 }
             }
-            double uisc = (double)dpi_now2 / 96.0;
-
-            // draw modal background and list
-            RECT bg = {0,0,w_now,h_now}; HBRUSH b = CreateSolidBrush(RGB(20,20,30)); FillRect(memDC, &bg, b); DeleteObject(b);
-            SetTextColor(memDC, RGB(220,220,220)); SetBkMode(memDC, TRANSPARENT);
-            DrawTextCentered(memDC, L"Manage High Scores", w_now/2, (int)round(30*uisc));
-
-            // layout rows
-            int rowStartY = (int)round(80*uisc);
-            int rowH = max(20, (int)round(28 * uisc));
-            for (size_t i=0;i<highList.size();++i) {
-                int y = rowStartY + (int)round(i * (rowH + (int)round(4 * uisc)));
-                // highlight selected
-                if ((int)i == sel) {
-                    int pad = (int)round(6 * uisc);
-                    int wbox = (int)round(500 * uisc);
-                    RECT rb = { w_now/2 - wbox/2 - pad, y - pad, w_now/2 + wbox/2 + pad, y + rowH + pad };
-                    HBRUSH selb = CreateSolidBrush(RGB(60,60,90)); FillRect(memDC, &rb, selb); DeleteObject(selb);
-                    SetTextColor(memDC, RGB(255,255,200));
-                } else {
-                    SetTextColor(memDC, RGB(200,200,200));
-                }
-                std::wstring line = std::to_wstring(i+1) + L"  " + highList[i].name + L"  " + std::to_wstring(highList[i].score);
-                DrawTextCentered(memDC, line, w_now/2, y + rowH/2);
-            }
-
-            // draw buttons: Delete Selected, Clear All, Back
-            int btnW = (int)round(140 * uisc);
-            int btnH = (int)round(36 * uisc);
-            int btnY = h_now - (int)round(80 * uisc);
-            int gap = (int)round(20 * uisc);
-            RECT btnDel = { w_now/2 - btnW - gap/2, btnY, w_now/2 - gap/2, btnY + btnH };
-            RECT btnClear = { w_now/2 + gap/2, btnY, w_now/2 + btnW + gap/2, btnY + btnH };
-            RECT btnBack = { w_now/2 - btnW/2, h_now - (int)round(40 * uisc) - btnH/2, w_now/2 + btnW/2, h_now - (int)round(40 * uisc) + btnH/2 };
-
-            // Delete button (disabled when no selection)
-            HBRUSH btnBg = CreateSolidBrush(RGB(100,40,40));
-            HBRUSH btnBgDisabled = CreateSolidBrush(RGB(60,60,60));
-            if (highList.empty()) FillRect(memDC, &btnDel, btnBgDisabled); else FillRect(memDC, &btnDel, btnBg);
-            FillRect(memDC, &btnClear, btnBg);
-            FillRect(memDC, &btnBack, btnBgDisabled);
-            DeleteObject(btnBg); DeleteObject(btnBgDisabled);
-
-            SetTextColor(memDC, RGB(240,240,240));
-            DrawTextCentered(memDC, L"Delete Selected", (btnDel.left + btnDel.right)/2, btnDel.top + btnH/2);
-            DrawTextCentered(memDC, L"Clear All", (btnClear.left + btnClear.right)/2, btnClear.top + btnH/2);
-            DrawTextCentered(memDC, L"Back", (btnBack.left + btnBack.right)/2, (btnBack.top + btnBack.bottom)/2);
-
-            // present
-            BitBlt(hdc, 0, 0, w_now, h_now, memDC, 0, 0, SRCCOPY);
-
-            // handle keyboard: ESC/Back
-            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; manage = false; break; }
-
-            // handle click-on-release via state.last_click_x/last_click_y
-            if (state.last_click_x != -1) {
-                int cx = state.last_click_x; int cy = state.last_click_y;
-                // reset so other loops don't see it
-                state.last_click_x = -1; state.last_click_y = -1;
-
-                // check rows hit
-                bool handled = false;
-                for (size_t i=0;i<highList.size();++i) {
-                    int y = rowStartY + (int)round(i * (rowH + 4) * uisc);
-                    int pad = (int)round(6 * uisc);
-                    int wbox = (int)round(500 * uisc);
-                    RECT rb = { w_now/2 - wbox/2 - pad, y - pad, w_now/2 + wbox/2 + pad, y + rowH + pad };
-                    if (cx >= rb.left && cx <= rb.right && cy >= rb.top && cy <= rb.bottom) {
-                        sel = (int)i; handled = true; break;
-                    }
-                }
-                if (handled) continue; // consumed
-
-                // check Delete Selected
-                if (!highList.empty() && cx >= btnDel.left && cx <= btnDel.right && cy >= btnDel.top && cy <= btnDel.bottom) {
-                    // delete selected entry
-                    // delete selected entry
-                    if (sel >= 0 && sel < (int)highList.size()) {
-                        highList.erase(highList.begin() + sel);
-                        if (sel >= (int)highList.size()) sel = (int)highList.size() - 1;
-                    }
-                    continue;
-                }
-
-                // check Clear All -> show confirmation overlay
-                if (cx >= btnClear.left && cx <= btnClear.right && cy >= btnClear.top && cy <= btnClear.bottom) {
-                    // confirmation loop
-                    // confirmation loop
-                    bool confirm = true; bool doClear = false;
-                    while (confirm && state.running) {
-                        MSG msg3;
-                        while (PeekMessage(&msg3, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg3); DispatchMessage(&msg3); }
-                        // redraw same base modal but with overlay
-                        RECT bg2 = {0,0,w_now,h_now}; HBRUSH b2 = CreateSolidBrush(RGB(10,10,10)); FillRect(memDC, &bg2, b2); DeleteObject(b2);
-                        SetTextColor(memDC, RGB(240,240,240)); SetBkMode(memDC, TRANSPARENT);
-                        DrawTextCentered(memDC, L"Confirm Clear All?", w_now/2, h_now/2 - (int)round(20*uisc));
-
-                        // draw yes/no buttons
-                        int yb = h_now/2 + (int)round(10*uisc);
-                        RECT rYes = { w_now/2 - btnW - gap, yb, w_now/2 - gap, yb + btnH };
-                        RECT rNo = { w_now/2 + gap, yb, w_now/2 + btnW + gap, yb + btnH };
-                        HBRUSH bYes = CreateSolidBrush(RGB(60,120,60)); HBRUSH bNo = CreateSolidBrush(RGB(120,60,60));
-                        FillRect(memDC, &rYes, bYes); FillRect(memDC, &rNo, bNo);
-                        DeleteObject(bYes); DeleteObject(bNo);
-                        DrawTextCentered(memDC, L"Yes", (rYes.left + rYes.right)/2, rYes.top + btnH/2);
-                        DrawTextCentered(memDC, L"No", (rNo.left + rNo.right)/2, rNo.top + btnH/2);
-
-                        BitBlt(hdc, 0, 0, w_now, h_now, memDC, 0, 0, SRCCOPY);
-
-                        if (state.last_click_x != -1) {
-                            int ccx = state.last_click_x; int ccy = state.last_click_y;
-                            state.last_click_x = -1; state.last_click_y = -1;
-                            if (ccx >= rYes.left && ccx <= rYes.right && ccy >= rYes.top && ccy <= rYes.bottom) { doClear = true; confirm = false; break; }
-                            if (ccx >= rNo.left && ccx <= rNo.right && ccy >= rNo.top && ccy <= rNo.bottom) { doClear = false; confirm = false; break; }
-                        }
-                        if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; doClear = true; confirm = false; break; }
-                        if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; doClear = false; confirm = false; break; }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                    }
-                    if (doClear) {
-                        highList.clear(); sel = 0;
-                    }
-                    continue;
-                }
-
-                // check Back
-                if (cx >= btnBack.left && cx <= btnBack.right && cy >= btnBack.top && cy <= btnBack.bottom) {
-                    manage = false; continue;
-                }
-            }
-
-            // ...existing code...
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            SetTextColor(mem, RGB(180,180,200));
+            DrawTextCentered(mem, L"Enter/Esc = Close   C = Clear All", w/2, h - (int)round(50*ui_scale_local));
+            BitBlt(hdcLocal,0,0,w,h,mem,0,0,SRCCOPY); ReleaseDC(hwnd, hdcLocal);
+            // input
+            if (state.key_down[VK_ESCAPE] || state.key_down[VK_RETURN]) { state.key_down[VK_ESCAPE]=state.key_down[VK_RETURN]=false; running=false; }
+            if (state.key_down['C']) { state.key_down['C']=false; highList.clear(); hsMgr.save(hsPath, highList); running=false; }
+            if (state.last_click_x!=-1) { // any click closes
+                state.last_click_x = state.last_click_y = -1; running=false; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }
-        state.ui_mode = 1;
+        state.ui_mode = 1; // back to menu
     };
+
+    // Reusable path tracer settings modal (sliders + checkboxes)
+    auto runPathTracerSettingsModal = [&]() {
+        if (rendererMode!=R_PATH) return;
+        // Elements order (for navigation): 7 base sliders, force rays checkbox, camera checkbox, RR enable checkbox,
+        // RR start bounce slider, RR min prob slider, Reset Defaults button.
+        state.ui_mode = 2; bool editing=true; int sel=0; 
+        const int baseSliderCount = 7;
+        const int totalItems = baseSliderCount + 1 /*force*/ + 1 /*camera*/ + 1 /*RR enable*/ + 1 /*RR start*/ + 1 /*RR min*/ + 1 /*Reset*/;
+        auto clampSel=[&](int &v){ if(v<0)v=0; if(v>totalItems-1)v=totalItems-1; };
+        int scrollOffset = 0; // vertical scroll in pixels
+        int maxScroll = 0;    // computed each frame
+        const int scrollStep = 40; // pixels per wheel notch / key scroll
+        while (editing && state.running) {
+            MSG m; while (PeekMessage(&m,nullptr,0,0,PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m);}                        
+            int w=state.width, h=state.height; int dpi_now=state.dpi; if (dpi_now==96){ HMODULE u=LoadLibraryW(L"user32.dll"); if(u){ auto p=(UINT(WINAPI*)(HWND))GetProcAddress(u,"GetDpiForWindow"); if(p) dpi_now=p(hwnd); FreeLibrary(u);} }
+            double ui_scale = (double)dpi_now / 96.0; HDC memDC = state.memDC; HDC hdcLocal = GetDC(hwnd);
+            RECT bg={0,0,w,h}; HBRUSH b=CreateSolidBrush(RGB(15,15,25)); FillRect(memDC,&bg,b); DeleteObject(b);
+            SetBkMode(memDC,TRANSPARENT); SetTextColor(memDC, RGB(235,235,245));
+            DrawTextCentered(memDC,L"Path Tracer Settings", w/2, (int)round(40*ui_scale));
+            struct SliderInfo { const wchar_t* label; int *val; int minv; int maxv; int step; };                            
+            SliderInfo sliders[] = {
+                {L"Rays / Frame", &settings.pt_rays_per_frame, 1, 1000, 1},
+                {L"Max Bounces", &settings.pt_max_bounces, 1, 8, 1},
+                {L"Internal Scale %", &settings.pt_internal_scale, 1, 100, 1},
+                {L"Metal Roughness %", &settings.pt_roughness, 0, 100, 1},
+                {L"Emissive %", &settings.pt_emissive, 1, 500, 1},
+                {L"Accum Alpha %", &settings.pt_accum_alpha, 0, 100, 1},
+                {L"Denoise %", &settings.pt_denoise_strength, 0, 100, 1}
+            };
+            int sliderCount = (int)(sizeof(sliders)/sizeof(sliders[0]));
+            int centerX = w/2; int baseY = (int)round(110*ui_scale) - scrollOffset; // apply scroll
+            int rowH = (int)round(46*ui_scale);
+            int barW = (int)round(420*ui_scale);
+            int barH = max(8,(int)round(10*ui_scale));
+            // Extended items indices mapping
+            int idxForce = baseSliderCount;
+            int idxCamera = baseSliderCount + 1;
+            int idxRREnable = baseSliderCount + 2;
+            int idxRRStart = baseSliderCount + 3;
+            int idxRRMin = baseSliderCount + 4;
+            int idxReset = baseSliderCount + 5;
+
+            // Tooltip detection: determine which element mouse is over (include new items)
+            int hoverItem = -1; // 0..sliderCount-1 sliders, others mapped above
+            {
+                int mx = state.mouse_x; int my = state.mouse_y;
+                // sliders regions (bar height area)
+                for (int i=0;i<sliderCount;i++) {
+                    int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                    RECT bar={bx,by,bx+barW,by+barH};
+                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) { hoverItem = i; break; }
+                }
+                if (hoverItem==-1) {
+                    int cyForce = baseY + baseSliderCount*rowH; RECT cbForce={centerX - (int)(220*ui_scale), cyForce - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyForce + (int)(16*ui_scale)};
+                    int cyCam = baseY + (baseSliderCount+1)*rowH; RECT cbCam={centerX - (int)(220*ui_scale), cyCam - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyCam + (int)(16*ui_scale)};
+                    int cyRRE = baseY + (baseSliderCount+2)*rowH; RECT cbRRE={centerX - (int)(220*ui_scale), cyRRE - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyRRE + (int)(16*ui_scale)};
+                    int cyRRStart = baseY + (baseSliderCount+3)*rowH; RECT rrStartBar={centerX - barW/2, cyRRStart + (int)round(14*ui_scale), centerX + barW/2, cyRRStart + (int)round(14*ui_scale) + barH};
+                    int cyRRMin = baseY + (baseSliderCount+4)*rowH; RECT rrMinBar={centerX - barW/2, cyRRMin + (int)round(14*ui_scale), centerX + barW/2, cyRRMin + (int)round(14*ui_scale) + barH};
+                    int cyReset = baseY + (baseSliderCount+5)*rowH; RECT resetBtn={centerX - (int)(160*ui_scale), cyReset - (int)(18*ui_scale), centerX + (int)(160*ui_scale), cyReset + (int)(18*ui_scale)};
+                    if (mx>=cbForce.left && mx<=cbForce.right && my>=cbForce.top && my<=cbForce.bottom) hoverItem=idxForce;
+                    else if (mx>=cbCam.left && mx<=cbCam.right && my>=cbCam.top && my<=cbCam.bottom) hoverItem=idxCamera;
+                    else if (mx>=cbRRE.left && mx<=cbRRE.right && my>=cbRRE.top && my<=cbRRE.bottom) hoverItem=idxRREnable;
+                    else if (mx>=rrStartBar.left && mx<=rrStartBar.right && my>=rrStartBar.top && my<=rrStartBar.bottom) hoverItem=idxRRStart;
+                    else if (mx>=rrMinBar.left && mx<=rrMinBar.right && my>=rrMinBar.top && my<=rrMinBar.bottom) hoverItem=idxRRMin;
+                    else if (mx>=resetBtn.left && mx<=resetBtn.right && my>=resetBtn.top && my<=resetBtn.bottom) hoverItem=idxReset;
+                }
+            }
+            for (int i=0;i<sliderCount;i++) {
+                int y = baseY + i*rowH;
+                bool hot = (sel==i);
+                SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210));
+                // Compose label with current value (percent-aware for all except rays/bounces)
+                int v = *sliders[i].val;
+                std::wstring dynLabel = std::wstring(sliders[i].label) + L": " + std::to_wstring(v);
+                DrawTextCentered(memDC, dynLabel, centerX, y);
+                int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                RECT bar={bx,by,bx+barW,by+barH};
+                HBRUSH bb=CreateSolidBrush(RGB(50,60,80)); FillRect(memDC,&bar,bb); DeleteObject(bb);
+                double t = double(*sliders[i].val - sliders[i].minv)/(double)(sliders[i].maxv - sliders[i].minv);
+                RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH bf=CreateSolidBrush(hot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,bf); DeleteObject(bf);
+            }
+            // Checkboxes & extra sliders
+            int cyForce = baseY + baseSliderCount*rowH; bool forceHot = (sel==idxForce);
+            std::wstring forceTxt = std::wstring(L"Force 1 ray / pixel: ") + (settings.pt_force_full_pixel_rays?L"ON":L"OFF");
+            SetTextColor(memDC, forceHot?RGB(255,240,160):RGB(200,200,210)); DrawTextCentered(memDC, forceTxt, centerX, cyForce);
+            int cyCam = baseY + (baseSliderCount+1)*rowH; bool camHot = (sel==idxCamera);
+            std::wstring camTxt = std::wstring(L"Camera: ") + (settings.pt_use_ortho?L"Orthographic":L"Perspective");
+            SetTextColor(memDC, camHot?RGB(255,240,160):RGB(200,200,210)); DrawTextCentered(memDC, camTxt, centerX, cyCam);
+            int cyRRE = baseY + (baseSliderCount+2)*rowH; bool rreHot = (sel==idxRREnable);
+            std::wstring rreTxt = std::wstring(L"Russian Roulette: ") + (settings.pt_rr_enable?L"ON":L"OFF");
+            SetTextColor(memDC, rreHot?RGB(255,240,160):RGB(200,200,210)); DrawTextCentered(memDC, rreTxt, centerX, cyRRE);
+            // RR Start bounce slider label+bar
+            int cyRRStart = baseY + (baseSliderCount+3)*rowH; bool rrStartHot = (sel==idxRRStart);
+            SetTextColor(memDC, rrStartHot?RGB(255,240,160):RGB(200,200,210));
+            std::wstring rrStartLabel = L"RR Start Bounce: " + std::to_wstring(settings.pt_rr_start_bounce);
+            DrawTextCentered(memDC, rrStartLabel, centerX, cyRRStart);
+            {
+                int bx = centerX - barW/2; int by = cyRRStart + (int)round(14*ui_scale);
+                RECT bar={bx,by,bx+barW,by+barH}; HBRUSH bb2=CreateSolidBrush(RGB(50,60,80)); FillRect(memDC,&bar,bb2); DeleteObject(bb2);
+                double t = double(settings.pt_rr_start_bounce - 1) / double(16 - 1);
+                RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH bf2=CreateSolidBrush(rrStartHot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,bf2); DeleteObject(bf2);
+            }
+            // RR Min probability slider
+            int cyRRMin = baseY + (baseSliderCount+4)*rowH; bool rrMinHot = (sel==idxRRMin);
+            SetTextColor(memDC, rrMinHot?RGB(255,240,160):RGB(200,200,210));
+            std::wstring rrMinLabel = L"RR Min Prob %: " + std::to_wstring(settings.pt_rr_min_prob_pct);
+            DrawTextCentered(memDC, rrMinLabel, centerX, cyRRMin);
+            {
+                int bx = centerX - barW/2; int by = cyRRMin + (int)round(14*ui_scale);
+                RECT bar={bx,by,bx+barW,by+barH}; HBRUSH bb2=CreateSolidBrush(RGB(50,60,80)); FillRect(memDC,&bar,bb2); DeleteObject(bb2);
+                double t = double(settings.pt_rr_min_prob_pct - 1) / double(90 - 1); if (t<0) t=0; if (t>1) t=1;
+                RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH bf2=CreateSolidBrush(rrMinHot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,bf2); DeleteObject(bf2);
+            }
+            // compute content height for scroll bounds (up to last RR slider)
+            int contentBottom = cyRRMin + (int)round(80*ui_scale);
+            int topVisible = (int)round(80*ui_scale);
+            int bottomPanelH = (int)round(130*ui_scale); // static panel height (buttons + legend)
+            int usableHeight = h - bottomPanelH;
+            // Avoid Windows macro collision with 'max' by using the parenthesized form
+            maxScroll = (std::max)(0, contentBottom - usableHeight + topVisible);
+
+            // Mouse wheel scrolling (accumulated deltas)
+            if (state.mouse_wheel_delta != 0) {
+                int steps = state.mouse_wheel_delta / 120; // Windows wheel notch
+                if (steps != 0) {
+                    scrollOffset -= steps * scrollStep; // wheel up (positive delta) scrolls up (reduce offset)
+                    if (scrollOffset < 0) scrollOffset = 0;
+                    if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+                    state.mouse_wheel_delta -= steps * 120; // consume whole notches only
+                }
+            }
+
+            // Draw scrollbar if scrollable
+            if (maxScroll > 0) {
+                int trackMargin = (int)round(8*ui_scale);
+                int trackW = (int)round(12*ui_scale);
+                int trackX = w - trackMargin - trackW;
+                int trackY0 = (int)round(80*ui_scale);
+                int trackY1 = h - bottomPanelH + (int)round(10*ui_scale); // end above static bottom panel
+                int trackH = trackY1 - trackY0;
+                RECT trackR = { trackX, trackY0, trackX + trackW, trackY1 };
+                HBRUSH trBrush = CreateSolidBrush(RGB(30,30,45)); FillRect(memDC,&trackR,trBrush); DeleteObject(trBrush);
+                FrameRect(memDC,&trackR,(HBRUSH)GetStockObject(GRAY_BRUSH));
+                double visibleFrac = (double)h / (double)(contentBottom + (int)round(40*ui_scale));
+                if (visibleFrac < 0.05) visibleFrac = 0.05; if (visibleFrac > 1.0) visibleFrac = 1.0;
+                int thumbH = (int)(std::max)( (double)(trackH * visibleFrac), 20.0 );
+                double scrollFrac = (maxScroll>0)? (double)scrollOffset / (double)maxScroll : 0.0;
+                int thumbY = trackY0 + (int)((trackH - thumbH) * scrollFrac + 0.5);
+                RECT thumbR = { trackX+2, thumbY, trackX + trackW - 2, thumbY + thumbH };
+                bool overThumb = (state.mouse_x>=thumbR.left && state.mouse_x<=thumbR.right && state.mouse_y>=thumbR.top && state.mouse_y<=thumbR.bottom);
+                static bool draggingThumb = false; static int dragStartY=0; static int dragStartOffset=0;
+                if (state.mouse_pressed && overThumb && !draggingThumb) { draggingThumb=true; dragStartY=state.mouse_y; dragStartOffset=scrollOffset; }
+                if (!state.mouse_pressed && draggingThumb) draggingThumb=false;
+                if (draggingThumb) {
+                    int dy = state.mouse_y - dragStartY;
+                    double trackMovable = (double)(trackH - thumbH);
+                    double newFrac = (trackMovable>0)? ( (double)dragStartOffset + dy * (double)maxScroll / trackMovable ) / (double)maxScroll : 0.0;
+                    if (newFrac < 0) newFrac = 0; if (newFrac > 1) newFrac = 1;
+                    scrollOffset = (int)(newFrac * maxScroll + 0.5);
+                }
+                HBRUSH thBrush = CreateSolidBrush(draggingThumb?RGB(160,120,90):(overThumb?RGB(120,90,70):RGB(90,70,55)));
+                FillRect(memDC,&thumbR,thBrush); DeleteObject(thBrush);
+            }
+
+            // Static bottom panel (buttons + legend)
+            RECT panelR = { (int)round(30*ui_scale), h - bottomPanelH + (int)round(6*ui_scale), w - (int)round(30*ui_scale), h - (int)round(6*ui_scale) };
+            HBRUSH pb = CreateSolidBrush(RGB(22,22,34)); FillRect(memDC,&panelR,pb); DeleteObject(pb);
+            FrameRect(memDC,&panelR,(HBRUSH)GetStockObject(GRAY_BRUSH));
+            int btnAreaH = (int)round(48*ui_scale);
+            RECT btnRow = { panelR.left + (int)round(12*ui_scale), panelR.top + (int)round(10*ui_scale), panelR.right - (int)round(12*ui_scale), panelR.top + btnAreaH };
+            int btnGap = (int)round(20*ui_scale);
+            int btnW = (btnRow.right - btnRow.left - btnGap)/2;
+            RECT resetBtnR = { btnRow.left, btnRow.top, btnRow.left + btnW, btnRow.bottom };
+            RECT saveBtnR  = { resetBtnR.right + btnGap, btnRow.top, resetBtnR.right + btnGap + btnW, btnRow.bottom };
+            auto drawButton=[&](RECT r,const wchar_t* label,bool hot,COLORREF base,COLORREF hotCol){
+                HBRUSH bb=CreateSolidBrush(hot?hotCol:base); FillRect(memDC,&r,bb); DeleteObject(bb);
+                FrameRect(memDC,&r,(HBRUSH)GetStockObject(GRAY_BRUSH));
+                SetBkMode(memDC, TRANSPARENT); SetTextColor(memDC, RGB(235,235,245)); RECT tr=r; DrawTextW(memDC,label,-1,&tr,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
+            };
+            bool hoverReset = (state.mouse_x>=resetBtnR.left && state.mouse_x<=resetBtnR.right && state.mouse_y>=resetBtnR.top && state.mouse_y<=resetBtnR.bottom);
+            bool hoverSave  = (state.mouse_x>=saveBtnR.left  && state.mouse_x<=saveBtnR.right  && state.mouse_y>=saveBtnR.top  && state.mouse_y<=saveBtnR.bottom);
+            drawButton(resetBtnR, L"Reset Defaults", hoverReset, RGB(60,35,35), RGB(90,50,50));
+            drawButton(saveBtnR,  L"Save Settings", hoverSave,  RGB(35,55,70), RGB(55,85,110));
+            RECT legendR = { panelR.left + (int)round(10*ui_scale), btnRow.bottom + (int)round(6*ui_scale), panelR.right - (int)round(10*ui_scale), panelR.bottom - (int)round(10*ui_scale) };
+            std::wstring legend = L"Enter=Close  Esc=Cancel  Arrows/Drag adjust  PgUp/PgDn/Wheel  Ctrl+Click numeric entry";
+            SetTextColor(memDC, RGB(200,200,215)); DrawTextW(memDC, legend.c_str(), -1, &legendR, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+
+            // Tooltip rendering near cursor with semi-transparent background
+            if (hoverItem!=-1) {
+                const wchar_t* tip = L"";
+                switch(hoverItem) {
+                    case 0: tip = L"Total rays budget per frame (or per pixel if forced). Higher = smoother, slower."; break;
+                    case 1: tip = L"Maximum path bounce depth. More bounces capture more indirect light but cost time."; break;
+                    case 2: tip = L"Internal rendering resolution percent. Lower improves speed, softer image."; break;
+                    case 3: tip = L"Metallic surface roughness (0=mirror, 100=diffuse-ish)."; break;
+                    case 4: tip = L"Relative emissive intensity of the ball glow."; break;
+                    case 5: tip = L"Temporal accumulation alpha (blend weight). Lower = more smoothing, slower response."; break;
+                    case 6: tip = L"Spatial denoise blend percent. Higher = blurrier, hides noise."; break;
+                    case 7: tip = L"Force interpreting Rays/Frame as rays-per-pixel instead of global budget."; break;
+                    case 8: tip = L"Switch between Orthographic and Perspective camera projection."; break;
+                    case 9: tip = L"Enable probabilistic early termination to reduce average path length."; break;
+                    case 10: tip = L"Bounce depth at which Russian roulette begins to test termination."; break;
+                    case 11: tip = L"Minimum survival probability clamp for roulette (higher keeps more paths)."; break;
+                    case 12: tip = L"Static reset button at bottom restores defaults."; break;
+                    case 13: tip = L"Reset all settings (static button)."; break;
+                    case 14: tip = L"Save current settings to file immediately."; break;
+                }
+                if (tip && *tip) {
+                    SIZE sz={0,0}; GetTextExtentPoint32W(memDC, tip, (int)wcslen(tip), &sz);
+                    int lineW = (int)round(320*ui_scale);
+                    // rough multi-line height estimate if width exceeds lineW
+                    int boxW = (std::min)(lineW, (int)(sz.cx + 16));
+                    int boxH = (int)(sz.cy + 16);
+                    // if text wider than boxW, add extra height for wrapping approximation
+                    if (sz.cx > boxW) {
+                        int lines = (sz.cx + boxW - 1) / boxW;
+                        boxH = lines * (sz.cy + 4) + 12;
+                    }
+                    int mx = state.mouse_x + 18; int my = state.mouse_y + 18; // offset from cursor
+                    RECT tr = { mx, my, mx + boxW, my + boxH };
+                    if (tr.right > w-8) { int d = tr.right - (w-8); tr.left -= d; tr.right -= d; }
+                    if (tr.bottom > h-8) { int d = tr.bottom - (h-8); tr.top -= d; tr.bottom -= d; }
+                    HBRUSH tb = CreateSolidBrush(RGB(30,30,50)); FillRect(memDC,&tr,tb); DeleteObject(tb);
+                    FrameRect(memDC,&tr,(HBRUSH)GetStockObject(GRAY_BRUSH));
+                    SetBkMode(memDC, TRANSPARENT);
+                    SetTextColor(memDC, RGB(215,215,235));
+                    RECT textRect = { tr.left + 6, tr.top + 4, tr.right - 6, tr.bottom - 4 };
+                    DrawTextW(memDC, tip, -1, &textRect, DT_LEFT | DT_WORDBREAK | DT_TOP);
+                }
+            }
+            BitBlt(hdcLocal,0,0,w,h,memDC,0,0,SRCCOPY); ReleaseDC(hwnd, hdcLocal);
+            // Input
+            if (state.key_down[VK_DOWN]) { sel++; clampSel(sel); state.key_down[VK_DOWN]=false; }
+            if (state.key_down[VK_UP]) { sel--; clampSel(sel); state.key_down[VK_UP]=false; }
+            if (sel < baseSliderCount) {
+                if (state.key_down[VK_LEFT]) { *sliders[sel].val = (std::max)(sliders[sel].minv, *sliders[sel].val - sliders[sel].step); state.key_down[VK_LEFT]=false; }
+                if (state.key_down[VK_RIGHT]) { *sliders[sel].val = (std::min)(sliders[sel].maxv, *sliders[sel].val + sliders[sel].step); state.key_down[VK_RIGHT]=false; }
+            } else if (sel==idxForce && (state.key_down[VK_LEFT]||state.key_down[VK_RIGHT])) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; state.key_down[VK_LEFT]=state.key_down[VK_RIGHT]=false; }
+            else if (sel==idxCamera && (state.key_down[VK_LEFT]||state.key_down[VK_RIGHT])) { settings.pt_use_ortho = settings.pt_use_ortho?0:1; state.key_down[VK_LEFT]=state.key_down[VK_RIGHT]=false; }
+            else if (sel==idxRREnable && (state.key_down[VK_LEFT]||state.key_down[VK_RIGHT])) { settings.pt_rr_enable = settings.pt_rr_enable?0:1; state.key_down[VK_LEFT]=state.key_down[VK_RIGHT]=false; }
+            else if (sel==idxRRStart) {
+                if (state.key_down[VK_LEFT]) { settings.pt_rr_start_bounce = (std::max)(1, settings.pt_rr_start_bounce - 1); state.key_down[VK_LEFT]=false; }
+                if (state.key_down[VK_RIGHT]) { settings.pt_rr_start_bounce = (std::min)(16, settings.pt_rr_start_bounce + 1); state.key_down[VK_RIGHT]=false; }
+            } else if (sel==idxRRMin) {
+                if (state.key_down[VK_LEFT]) { settings.pt_rr_min_prob_pct = (std::max)(1, settings.pt_rr_min_prob_pct - 1); state.key_down[VK_LEFT]=false; }
+                if (state.key_down[VK_RIGHT]) { settings.pt_rr_min_prob_pct = (std::min)(90, settings.pt_rr_min_prob_pct + 1); state.key_down[VK_RIGHT]=false; }
+            }
+            // Scroll keys
+            if (state.key_down[VK_PRIOR]) { // PageUp
+                scrollOffset -= (int)(h*0.5); if (scrollOffset<0) scrollOffset=0; state.key_down[VK_PRIOR]=false; }
+            if (state.key_down[VK_NEXT]) { // PageDown
+                scrollOffset += (int)(h*0.5); if (scrollOffset>maxScroll) scrollOffset=maxScroll; state.key_down[VK_NEXT]=false; }
+            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; editing=false; }
+            if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; editing=false; }
+            // Ctrl+Click on a slider: direct numeric entry (basic modal capture)
+            if (state.last_click_x!=-1 && (GetKeyState(VK_CONTROL) & 0x8000)) {
+                int mx = state.last_click_x; int my = state.last_click_y; state.last_click_x=-1; state.last_click_y=-1;
+                for (int i=0;i<7;i++) {
+                    int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                    RECT bar={bx,by,bx+barW,by+barH};
+                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
+                        // create lightweight input box
+                        int boxW = 160; int boxH = 24;
+                        // Avoid std::min/std::max because Windows headers may define macros
+                        // that collide with these names. Use explicit clamping instead.
+                        int bxw = bx;
+                        if (bxw < 10) bxw = 10;
+                        int bxw_max = w - boxW - 10;
+                        if (bxw > bxw_max) bxw = bxw_max;
+                        int bxy = by - 30;
+                        if (bxy < 10) bxy = 10;
+                        HWND edit = CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW, L"EDIT", std::to_wstring(*sliders[i].val).c_str(), WS_VISIBLE|WS_CHILD|ES_LEFT,
+                            bxw, bxy, boxW, boxH, hwnd, NULL, hInstance, NULL);
+                        if (edit) {
+                            HFONT f = (HFONT)SendMessage(hwnd, WM_GETFONT, 0, 0); if (f) SendMessageW(edit, WM_SETFONT, (WPARAM)f, TRUE);
+                            bool done=false; std::wstring buffer;
+                            while(!done && state.running) {
+                                MSG em; while(PeekMessage(&em,nullptr,0,0,PM_REMOVE)) { if (em.message==WM_KEYDOWN && em.wParam==VK_RETURN) { done=true; } else if (em.message==WM_KEYDOWN && em.wParam==VK_ESCAPE) { buffer.clear(); done=true; } TranslateMessage(&em); DispatchMessage(&em);}                                
+                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                            }
+                            int len = GetWindowTextLengthW(edit); if (len>0){ buffer.resize(len+1); GetWindowTextW(edit,&buffer[0],len+1); buffer.resize(len);} else buffer.clear();
+                            DestroyWindow(edit);
+                            if (!buffer.empty()) {
+                                try { int nv = std::stoi(buffer); if (nv < sliders[i].minv) nv=sliders[i].minv; if (nv>sliders[i].maxv) nv=sliders[i].maxv; *sliders[i].val = nv; sel=i; } catch(...) {}
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            // Mouse drag sliders
+            if (state.mouse_pressed) {
+                int mx = state.mouse_x; int my = state.mouse_y;
+                for (int i=0;i<sliderCount;i++) {
+                    int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
+                    RECT bar={bx,by,bx+barW,by+barH};
+                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
+                        double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
+                        int val = sliders[i].minv + (int)std::round(tt*(sliders[i].maxv - sliders[i].minv));
+                        int step = sliders[i].step; val = (val/step)*step;
+                        if (val < sliders[i].minv) val = sliders[i].minv; if (val > sliders[i].maxv) val = sliders[i].maxv;
+                        *sliders[i].val = val; sel=i;
+                    }
+                }
+                // RR sliders
+                {
+                    int bx = centerX - barW/2; int by = (baseY + (baseSliderCount+3)*rowH) + (int)round(14*ui_scale);
+                    RECT bar={bx,by,bx+barW,by+barH};
+                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
+                        double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
+                        int val = 1 + (int)std::round(tt*(16 - 1)); if (val<1) val=1; if (val>16) val=16;
+                        settings.pt_rr_start_bounce = val; sel=idxRRStart;
+                    }
+                }
+                {
+                    int bx = centerX - barW/2; int by = (baseY + (baseSliderCount+4)*rowH) + (int)round(14*ui_scale);
+                    RECT bar={bx,by,bx+barW,by+barH};
+                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
+                        double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
+                        int val = 1 + (int)std::round(tt*(90 - 1)); if (val<1) val=1; if (val>90) val=90;
+                        settings.pt_rr_min_prob_pct = val; sel=idxRRMin;
+                    }
+                }
+            }
+            // Mouse click checkboxes on release
+            if (state.last_click_x!=-1) {
+                int cx = state.last_click_x; int cy = state.last_click_y;
+                auto hitRect=[&](int yCenter, int halfH){ RECT r={centerX - (int)(220*ui_scale), yCenter - halfH, centerX + (int)(220*ui_scale), yCenter + halfH}; return cx>=r.left && cx<=r.right && cy>=r.top && cy<=r.bottom; };
+                if (hitRect(cyForce, (int)(16*ui_scale))) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; sel=idxForce; }
+                else if (hitRect(cyCam, (int)(16*ui_scale))) { settings.pt_use_ortho = settings.pt_use_ortho?0:1; sel=idxCamera; }
+                else if (hitRect(cyRRE, (int)(16*ui_scale))) { settings.pt_rr_enable = settings.pt_rr_enable?0:1; sel=idxRREnable; }
+                // static bottom panel buttons
+                else {
+                    int bottomPanelH = (int)round(130*ui_scale);
+                    RECT panelR = { (int)round(30*ui_scale), h - bottomPanelH + (int)round(6*ui_scale), w - (int)round(30*ui_scale), h - (int)round(6*ui_scale) };
+                    int btnAreaH = (int)round(48*ui_scale);
+                    RECT btnRow = { panelR.left + (int)round(12*ui_scale), panelR.top + (int)round(10*ui_scale), panelR.right - (int)round(12*ui_scale), panelR.top + btnAreaH };
+                    int btnGap = (int)round(20*ui_scale);
+                    int btnW = (btnRow.right - btnRow.left - btnGap)/2;
+                    RECT resetBtnR = { btnRow.left, btnRow.top, btnRow.left + btnW, btnRow.bottom };
+                    RECT saveBtnR  = { resetBtnR.right + btnGap, btnRow.top, resetBtnR.right + btnGap + btnW, btnRow.bottom };
+                    if (cx>=resetBtnR.left && cx<=resetBtnR.right && cy>=resetBtnR.top && cy<=resetBtnR.bottom) {
+                        settings.pt_rays_per_frame = 1; settings.pt_max_bounces = 5; settings.pt_internal_scale = 10; settings.pt_roughness = 0; settings.pt_emissive = 100; settings.pt_accum_alpha = 75; settings.pt_denoise_strength = 25; settings.pt_force_full_pixel_rays = 1; settings.pt_use_ortho = 1; settings.pt_rr_enable = 1; settings.pt_rr_start_bounce = 2; settings.pt_rr_min_prob_pct = 10; }
+                    else if (cx>=saveBtnR.left && cx<=saveBtnR.right && cy>=saveBtnR.top && cy<=saveBtnR.bottom) { settingsMgr.save(exeDir + L"settings.json", settings); }
+                }
+                state.last_click_x=-1; state.last_click_y=-1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+        state.ui_mode = 1; settings_changed = true; // ensure persistence after close
+    };
+
     // Ensure WindowProc knows we're in the menu so mouse clicks map to menu options
     state.ui_mode = 1;
     // Main configuration/menu loop
@@ -476,7 +720,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             int ys[7] = { (int)(120 * ui_scale + 0.5), (int)(170 * ui_scale + 0.5), (int)(220 * ui_scale + 0.5), (int)(270 * ui_scale + 0.5), (int)(330 * ui_scale + 0.5), (int)(380 * ui_scale + 0.5), (int)(430 * ui_scale + 0.5) };
             for (int i=0;i<7;i++) {
                 int pad = (int)max(6.0, 10.0 * ui_scale);
-                int wbox = (int)max(300.0, 300.0 * ui_scale);
+                int wbox = (int)max(260.0, 260.0 * ui_scale);
                 RECT rb = { baseX - pad, ys[i] - (int)(6*ui_scale + 0.5), baseX + wbox, ys[i] + (int)(34*ui_scale + 0.5) };
                 if (mx >= rb.left && mx <= rb.right && my >= rb.top && my <= rb.bottom) { hoverIndex = i; break; }
             }
@@ -543,7 +787,8 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         }
         if (state.key_down[VK_RETURN]) {
             state.key_down[VK_RETURN]=false;
-            if (menuIndex==4) { inMenu = false; state.ui_mode = 0; }
+            if (menuIndex==3) { if (rendererMode==R_PATH) { runPathTracerSettingsModal(); settings_changed=true; } }
+            else if (menuIndex==4) { inMenu = false; state.ui_mode = 0; }
             else if (menuIndex==5) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
             else if (menuIndex==6) { state.running = false; break; }
         }
@@ -556,90 +801,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 case 0: ctrl = (ctrl==CTRL_KEYBOARD)?CTRL_MOUSE:CTRL_KEYBOARD; settings.control_mode = (ctrl==CTRL_MOUSE)?1:0; settings_changed=true; break;
                 case 1: ai = (AIDifficulty)((ai+1)%3); settings.ai = ai; settings_changed=true; break;
                 case 2: rendererMode = (rendererMode==R_CLASSIC)?R_PATH:R_CLASSIC; settings.renderer=(rendererMode==R_PATH)?1:0; settings_changed=true; break;
-                case 3: {
-                    // Open path tracer settings modal
-                    if (rendererMode==R_PATH) {
-                        // Modal loop
-                        state.ui_mode = 2; bool editing=true; int sel=0; const int itemCount=8; // 7 sliders + checkbox
-                        auto clampSel=[&](int &v){ if(v<0)v=0; if(v>itemCount-1)v=itemCount-1; };
-                        while (editing && state.running) {
-                            MSG m; while (PeekMessage(&m,nullptr,0,0,PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m);}                        
-                            int w=state.width, h=state.height; RECT bg={0,0,w,h}; HBRUSH b=CreateSolidBrush(RGB(15,15,25)); FillRect(memDC,&bg,b); DeleteObject(b);
-                            SetBkMode(memDC,TRANSPARENT); SetTextColor(memDC, RGB(235,235,245));
-                            DrawTextCentered(memDC,L"Path Tracer Settings", w/2, (int)round(40*ui_scale));
-                            struct SliderInfo { const wchar_t* label; int *val; int minv; int maxv; int step; };                            
-                            SliderInfo sliders[] = {
-                                {L"Rays / Frame", &settings.pt_rays_per_frame, 100, 200000, 100},
-                                {L"Max Bounces", &settings.pt_max_bounces, 1, 8, 1},
-                                {L"Internal Scale %", &settings.pt_internal_scale, 25, 100, 1},
-                                {L"Metal Roughness %", &settings.pt_roughness, 0, 100, 1},
-                                {L"Emissive %", &settings.pt_emissive, 50, 300, 5},
-                                {L"Accum Alpha %", &settings.pt_accum_alpha, 1, 50, 1},
-                                {L"Denoise %", &settings.pt_denoise_strength, 0, 100, 1}
-                            };
-                            int baseY = (int)round(90*ui_scale);
-                            int rowH = (int)round(40*ui_scale);
-                            int barW = (int)round(400*ui_scale);
-                            int barH = (int)round(10*ui_scale);
-                            int centerX = w/2;
-                            for (int i=0;i<7;i++) {
-                                int y = baseY + i*rowH;
-                                bool hot = (sel==i);
-                                SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210));
-                                std::wstring label = std::wstring(sliders[i].label) + L": " + std::to_wstring(*sliders[i].val);
-                                DrawTextCentered(memDC, label, centerX, y);
-                                // bar rect
-                                int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
-                                RECT bar={bx,by,bx+barW,by+barH}; HBRUSH barBg=CreateSolidBrush(RGB(40,40,60)); FillRect(memDC,&bar,barBg); DeleteObject(barBg);
-                                double t = double(*sliders[i].val - sliders[i].minv)/(sliders[i].maxv - sliders[i].minv);
-                                if(t<0)t=0; if(t>1)t=1;
-                                RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH barFill=CreateSolidBrush(hot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,barFill); DeleteObject(barFill);
-                            }
-                            // checkbox
-                            int cbIndex = 7; int cy = baseY + 7*rowH; bool cbHot = (sel==cbIndex);
-                            std::wstring cbTxt = std::wstring(L"Force 1 ray / pixel: ") + (settings.pt_force_full_pixel_rays?L"ON":L"OFF");
-                            SetTextColor(memDC, cbHot?RGB(255,240,160):RGB(200,200,210));
-                            DrawTextCentered(memDC, cbTxt, centerX, cy);
-                            // instructions
-                            SetTextColor(memDC, RGB(170,170,190));
-                            DrawTextCentered(memDC, L"Enter=Close  Esc=Cancel  Arrows adjust  Click+Drag bars", centerX, h - (int)round(40*ui_scale));
-                            BitBlt(hdc,0,0,w,h,memDC,0,0,SRCCOPY);
-                            // handle input
-                            if (state.key_down[VK_DOWN]) { sel++; clampSel(sel); state.key_down[VK_DOWN]=false; }
-                            if (state.key_down[VK_UP]) { sel--; clampSel(sel); state.key_down[VK_UP]=false; }
-                            if (sel < 7) {
-                                if (state.key_down[VK_LEFT]) { *sliders[sel].val = max(sliders[sel].minv, *sliders[sel].val - sliders[sel].step); state.key_down[VK_LEFT]=false; }
-                                if (state.key_down[VK_RIGHT]) { *sliders[sel].val = min(sliders[sel].maxv, *sliders[sel].val + sliders[sel].step); state.key_down[VK_RIGHT]=false; }
-                            } else if (sel==7 && (state.key_down[VK_LEFT]||state.key_down[VK_RIGHT])) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; state.key_down[VK_LEFT]=state.key_down[VK_RIGHT]=false; }
-                            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; editing=false; /* cancel changes? we already modified settings live */ }
-                            if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; editing=false; }
-                            // mouse interaction for bars
-                            if (state.mouse_pressed || state.last_click_x!=-1) {
-                                int mx = state.mouse_x; int my = state.mouse_y;
-                                for (int i=0;i<7;i++) {
-                                    int y = baseY + i*rowH;
-                                    int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
-                                    RECT bar={bx,by,bx+barW,by+barH};
-                                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
-                                        double t = double(mx - bar.left)/barW; if(t<0)t=0; if(t>1)t=1;
-                                        int val = sliders[i].minv + (int)std::round(t*(sliders[i].maxv - sliders[i].minv));
-                                        // snap to step
-                                        int step = sliders[i].step; val = (val/step)*step;
-                                        if (val < sliders[i].minv) val = sliders[i].minv; if (val > sliders[i].maxv) val = sliders[i].maxv;
-                                        *sliders[i].val = val; sel=i;
-                                    }
-                                }
-                                // checkbox click
-                                int cyBox = cy; RECT cbRect={centerX - (int)(220*ui_scale), cyBox - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyBox + (int)(16*ui_scale)};
-                                if (state.last_click_x!=-1 && state.last_click_x>=cbRect.left && state.last_click_x<=cbRect.right && state.last_click_y>=cbRect.top && state.last_click_y<=cbRect.bottom) {
-                                    settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; sel=7; state.last_click_x=-1; state.last_click_y=-1;
-                                }
-                            }
-                            std::this_thread::sleep_for(std::chrono::milliseconds(15));
-                        }
-                        state.ui_mode = 1; settings_changed = true; // mark for save
-                    }
-                } break;
+                case 3: { if (rendererMode==R_PATH) { runPathTracerSettingsModal(); settings_changed = true; } } break;
                 case 4: inMenu=false; break;
                 case 5: manageHighScoresModal(); hsMgr.save(hsPath, highList); break;
                 case 6: state.running=false; break;
@@ -668,10 +830,99 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
     srCfg.accumAlpha = settings.pt_accum_alpha / 100.0f;
     srCfg.denoiseStrength = settings.pt_denoise_strength / 100.0f;
     srCfg.forceFullPixelRays = settings.pt_force_full_pixel_rays!=0;
+    srCfg.useOrtho = settings.pt_use_ortho!=0;
+    srCfg.rouletteEnable = settings.pt_rr_enable!=0;
+    srCfg.rouletteStartBounce = settings.pt_rr_start_bounce;
+    srCfg.rouletteMinProb = settings.pt_rr_min_prob_pct / 100.0f;
     soft.configure(srCfg);
     soft.resize(state.width, state.height);
 
     while (state.running) {
+        if (state.request_menu) {
+            state.request_menu = false;
+            // Full main menu re-entry (same logic as initial menu phase)
+            inMenu = true; state.ui_mode = 1; state.menu_click_index = -1; // reset selection
+            state.suppressMenuClickDown = true; // prevent double toggle on press+release
+            while (inMenu && state.running) {
+                MSG msgM; while (PeekMessage(&msgM,NULL,0,0,PM_REMOVE)){ TranslateMessage(&msgM); DispatchMessage(&msgM);}                
+                int w = state.width; int h = state.height; int dpi_now2 = state.dpi; if (dpi_now2==96){ HMODULE u=LoadLibraryW(L"user32.dll"); if(u){ auto p=(UINT(WINAPI*)(HWND))GetProcAddress(u,"GetDpiForWindow"); if(p) dpi_now2=p(hwnd); FreeLibrary(u);} }
+                double ui_scale2 = (double)dpi_now2 / 96.0; HDC memDC2 = state.memDC; HDC hdc2 = GetDC(hwnd);
+                RECT bg={0,0,w,h}; HBRUSH bb=CreateSolidBrush(RGB(12,12,20)); FillRect(memDC2,&bg,bb); DeleteObject(bb);
+                SetBkMode(memDC2, TRANSPARENT);
+                SetTextColor(memDC2, RGB(235,235,245));
+                DrawTextCentered(memDC2, L"PongCpp", w/2, (int)round(60*ui_scale2));
+                std::wstring items[7];
+                items[0] = std::wstring(L"Control: ") + ((ctrl==CTRL_KEYBOARD)?L"Keyboard":L"Mouse");
+                items[1] = std::wstring(L"AI: ") + ((ai==AI_EASY)?L"Easy": (ai==AI_NORMAL)?L"Normal":L"Hard");
+                items[2] = std::wstring(L"Renderer: ") + ((rendererMode==R_CLASSIC)?L"Classic":L"Path Tracer");
+                items[3] = L"Path Tracer Settings";
+                items[4] = L"Start Game";
+                items[5] = L"High Scores";
+                items[6] = L"Quit";
+                int baseY = (int)round(120*ui_scale2);
+                for (int i=0;i<7;i++) {
+                    bool hot = (i==menuIndex);
+                    SetTextColor(memDC2, hot?RGB(255,240,160):RGB(190,190,200));
+                    DrawTextCentered(memDC2, items[i], w/2, baseY + i*(int)round(50*ui_scale2));
+                }
+                BitBlt(hdc2,0,0,w,h,memDC2,0,0,SRCCOPY);
+                ReleaseDC(hwnd, hdc2);
+                // Keyboard navigation
+                if (state.key_down[VK_DOWN]) { state.key_down[VK_DOWN]=false; menuIndex = (menuIndex+1)%7; }
+                if (state.key_down[VK_UP]) { state.key_down[VK_UP]=false; menuIndex = (menuIndex+6)%7; }
+                if (state.key_down[VK_LEFT]) {
+                    state.key_down[VK_LEFT]=false;
+                    if (menuIndex==0) { ctrl = (ctrl==CTRL_KEYBOARD)?CTRL_MOUSE:CTRL_KEYBOARD; settings.control_mode = (ctrl==CTRL_MOUSE)?1:0; settings_changed=true; }
+                    else if (menuIndex==1) { ai = (AIDifficulty)((ai+2)%3); settings.ai = ai; settings_changed=true; }
+                    else if (menuIndex==2) { rendererMode = (rendererMode==R_CLASSIC)?R_PATH:R_CLASSIC; settings.renderer=(rendererMode==R_PATH)?1:0; settings_changed=true; }
+                }
+                if (state.key_down[VK_RIGHT]) {
+                    state.key_down[VK_RIGHT]=false;
+                    if (menuIndex==0) { ctrl = (ctrl==CTRL_KEYBOARD)?CTRL_MOUSE:CTRL_KEYBOARD; settings.control_mode = (ctrl==CTRL_MOUSE)?1:0; settings_changed=true; }
+                    else if (menuIndex==1) { ai = (AIDifficulty)((ai+1)%3); settings.ai = ai; settings_changed=true; }
+                    else if (menuIndex==2) { rendererMode = (rendererMode==R_CLASSIC)?R_PATH:R_CLASSIC; settings.renderer=(rendererMode==R_PATH)?1:0; settings_changed=true; }
+                }
+                if (state.key_down[VK_RETURN]) {
+                    state.key_down[VK_RETURN]=false;
+                    if (menuIndex==3) {
+                        runPathTracerSettingsModal();
+                    } else if (menuIndex==4) { inMenu=false; }
+                    else if (menuIndex==5) { manageHighScoresModal(); hsMgr.save(hsPath, highList); }
+                    else if (menuIndex==6) { state.running=false; }
+                }
+                if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; state.running=false; break; }
+                // Mouse click detection (reuse original hit testing simplified)
+                if (state.last_click_x!=-1) {
+                    int cx = state.last_click_x; int cy = state.last_click_y; state.last_click_x=-1; state.last_click_y=-1;
+                    // Simple vertical band detection
+                    for (int i=0;i<7;i++) {
+                        int y = baseY + i*(int)round(50*ui_scale2);
+                        RECT rItem = { w/2 - 250, y - 20, w/2 + 250, y + 20 };
+                        if (cx>=rItem.left && cx<=rItem.right && cy>=rItem.top && cy<=rItem.bottom) {
+                            menuIndex = i; state.menu_click_index = i; break; }
+                    }
+                }
+                if (state.menu_click_index != -1) {
+                    int clicked = state.menu_click_index; state.menu_click_index=-1;
+                    switch(clicked) {
+                        case 0: ctrl = (ctrl==CTRL_KEYBOARD)?CTRL_MOUSE:CTRL_KEYBOARD; settings.control_mode=(ctrl==CTRL_MOUSE)?1:0; settings_changed=true; break;
+                        case 1: ai = (AIDifficulty)((ai+1)%3); settings.ai=ai; settings_changed=true; break;
+                        case 2: rendererMode = (rendererMode==R_CLASSIC)?R_PATH:R_CLASSIC; settings.renderer=(rendererMode==R_PATH)?1:0; settings_changed=true; break;
+                        case 3: { if (rendererMode==R_PATH) { runPathTracerSettingsModal(); } } break;
+                        case 4: inMenu=false; break;
+                        case 5: manageHighScoresModal(); hsMgr.save(hsPath, highList); break;
+                        case 6: state.running=false; break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            }
+            state.ui_mode = 0;
+            state.suppressMenuClickDown = false;
+            if (settings_changed) { settingsMgr.save(exeDir + L"settings.json", settings); settings_changed=false; }
+            // Sync renderer enable switch & reset history after menu changes
+            bool newEnable = (rendererMode==R_PATH);
+            if (srCfg.enablePathTracing != newEnable) { srCfg.enablePathTracing = newEnable; soft.configure(srCfg); soft.resetHistory(); }
+        }
         // message pump
         MSG msg;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -703,10 +954,12 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         }
         double ui_scale = (double)dpi_now / 96.0;
 
-        // Resize renderer if needed
-        if (winW != state.width || winH != state.height) {
-            soft.resize(state.width, state.height);
+        // Resize renderer if needed (track last known size explicitly)
+        static int lastRenderW = -1, lastRenderH = -1;
+        if (winW != lastRenderW || winH != lastRenderH) {
+            soft.resize(winW, winH);
             soft.resetHistory();
+            lastRenderW = winW; lastRenderH = winH;
         }
 
         // Expose game state for rendering and UI (move out of renderer-specific blocks so it's available later)
@@ -743,6 +996,10 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             applyIf(srCfg.accumAlpha, settings.pt_accum_alpha/100.0f);
             applyIf(srCfg.denoiseStrength, settings.pt_denoise_strength/100.0f);
             bool forceFlag = settings.pt_force_full_pixel_rays!=0; applyIf(srCfg.forceFullPixelRays, forceFlag);
+            bool orthoFlag = settings.pt_use_ortho!=0; applyIf(srCfg.useOrtho, orthoFlag);
+            bool rrEnable = settings.pt_rr_enable!=0; applyIf(srCfg.rouletteEnable, rrEnable);
+            applyIf(srCfg.rouletteStartBounce, settings.pt_rr_start_bounce);
+            float rrMinProb = settings.pt_rr_min_prob_pct / 100.0f; applyIf(srCfg.rouletteMinProb, rrMinProb);
             if (!srCfg.enablePathTracing) { srCfg.enablePathTracing=true; changed=true; }
              if (changed) { soft.configure(srCfg); soft.resetHistory(); }
             soft.render(core.state());
@@ -750,6 +1007,38 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             const BITMAPINFO &bi = soft.getBitmapInfo();
             const void *pix = soft.pixels();
             StretchDIBits(memDC, 0,0, winW, winH, 0,0, winW, winH, pix, &bi, DIB_RGB_COLORS, SRCCOPY);
+            // JSON performance logging (append line)
+            {
+                static FILE* perfFile = nullptr;
+                if (!perfFile) {
+                    std::wstring path = exeDir + L"perf_log.json";
+                    FILE* fTemp = nullptr;
+                    if (_wfopen_s(&fTemp, path.c_str(), L"ab") == 0) {
+                        perfFile = fTemp; // success
+                    }
+                }
+                if (perfFile) {
+                    const SRStats &st = soft.stats();
+                    // serialize current SRConfig & stats (subset) as JSON line
+                    fprintf(perfFile,
+                        "{\"frame\":%u,\"ms\":{\"total\":%.3f,\"trace\":%.3f,\"temporal\":%.3f,\"denoise\":%.3f,\"upscale\":%.3f},\"res\":{\"w\":%d,\"h\":%d},\"spp\":%d,\"rays\":%d,\"avgBounce\":%.3f,\"config\":{\"raysPerFrame\":%d,\"maxBounces\":%d,\"internalScalePct\":%d,\"roughness\":%.3f,\"emissive\":%.3f,\"accumAlpha\":%.3f,\"denoise\":%.3f,\"forceFullPixelRays\":%s,\"useOrtho\":%s}}\n",
+                        st.frame, st.msTotal, st.msTrace, st.msTemporal, st.msDenoise, st.msUpscale,
+                        st.internalW, st.internalH, st.spp, st.totalRays, st.avgBounceDepth,
+                        srCfg.raysPerFrame, srCfg.maxBounces, srCfg.internalScalePct, srCfg.metallicRoughness, srCfg.emissiveIntensity,
+                        srCfg.accumAlpha, srCfg.denoiseStrength, srCfg.forceFullPixelRays?"true":"false", srCfg.useOrtho?"true":"false");
+                    fflush(perfFile);
+                }
+            }
+            // Stats overlay (top-left)
+            const SRStats &st = soft.stats();
+            SetBkMode(memDC, TRANSPARENT);
+            SetTextColor(memDC, RGB(230,230,180));
+            wchar_t buf[256];
+            swprintf(buf, 256, L"PT %.2fms (trace %.2f t%.2f d%.2f u%.2f) Rays %d spp %d %dx%d avgB %.2f",
+                st.msTotal, st.msTrace, st.msTemporal, st.msDenoise, st.msUpscale,
+                st.totalRays, st.spp, st.internalW, st.internalH, st.avgBounceDepth);
+            RECT rStats = { 8, 8, winW/2, 100 };
+            DrawTextW(memDC, buf, -1, &rStats, DT_LEFT | DT_TOP | DT_NOCLIP);
             // Overlay paddles & ball outlines for clearer gameplay feedback
             GameState &ogs = core.state();
             const int gw = 80, gh = 24;

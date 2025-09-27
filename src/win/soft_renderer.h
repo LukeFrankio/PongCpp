@@ -51,6 +51,25 @@ struct SRConfig {
     float denoiseStrength = 0.35f;        // 0 disables spatial blend, 1 full 3x3 blur
     // Camera
     bool useOrtho = true;                 // When true, use orthographic camera matching 2D game mapping
+    // Russian roulette termination controls
+    bool  rouletteEnable = true;          // Enable Russian roulette early termination
+    int   rouletteStartBounce = 2;         // Start applying roulette at or after this bounce
+    float rouletteMinProb = 0.1f;          // Minimum survival probability clamp
+};
+
+// Runtime statistics for profiling / HUD overlay
+struct SRStats {
+    float msTrace = 0.0f;      // path tracing kernel (ray casting & shading)
+    float msTemporal = 0.0f;   // temporal accumulation time
+    float msDenoise = 0.0f;    // spatial denoise time
+    float msUpscale = 0.0f;    // upscale + tone map packing time
+    float msTotal = 0.0f;      // total time spent inside render()
+    int internalW = 0;         // internal render target width
+    int internalH = 0;         // internal render target height
+    int spp = 0;               // samples per pixel this frame
+    int totalRays = 0;         // spp * internalW * internalH
+    float avgBounceDepth = 0.0f; // average number of bounces executed per path
+    unsigned frame = 0;        // frame counter for renderer (post increment)
 };
 
 class SoftRenderer {
@@ -65,6 +84,8 @@ public:
     // Renders into internal pixel buffer; caller blits via getBitmapInfo/pixels
     void render(const GameState &gs);
 
+    const SRStats &stats() const { return stats_; }
+
     const BITMAPINFO &getBitmapInfo() const { return bmpInfo; }
     const uint32_t *pixels() const { return reinterpret_cast<const uint32_t*>(pixel32.data()); }
 
@@ -78,6 +99,7 @@ private:
     bool haveHistory = false;
     std::vector<uint32_t> pixel32; // packed BGRA for GDI (A unused)
     unsigned frameCounter = 0;
+    SRStats stats_{};              // last frame statistics
 
     void updateInternalResolution();
     void toneMapAndPack();

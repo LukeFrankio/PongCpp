@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath> // sqrt, tan, fabs, pow
+#include <chrono>
 
 // Simple XOR shift RNG for deterministic sampling
 static inline uint32_t xorshift(uint32_t &s) {
@@ -48,6 +49,8 @@ void SoftRenderer::configure(const SRConfig &cfg) {
     if (config.denoiseStrength < 0.0f) config.denoiseStrength = 0.0f; if (config.denoiseStrength > 1.0f) config.denoiseStrength = 1.0f;
     if (config.metallicRoughness < 0.0f) config.metallicRoughness = 0.0f; if (config.metallicRoughness > 1.0f) config.metallicRoughness = 1.0f;
     if (config.emissiveIntensity < 0.1f) config.emissiveIntensity = 0.1f; if (config.emissiveIntensity > 5.0f) config.emissiveIntensity = 5.0f;
+    if (config.rouletteStartBounce < 1) config.rouletteStartBounce = 1; if (config.rouletteStartBounce > 16) config.rouletteStartBounce = 16;
+    if (config.rouletteMinProb < 0.01f) config.rouletteMinProb = 0.01f; if (config.rouletteMinProb > 0.9f) config.rouletteMinProb = 0.9f;
     updateInternalResolution();
 }
 
@@ -137,6 +140,10 @@ void SoftRenderer::render(const GameState &gs) {
     if (!config.enablePathTracing) return; // nothing (caller can draw classic)
     if (rtW==0||rtH==0) return;
 
+    using clock = std::chrono::high_resolution_clock;
+    auto tStart = clock::now();
+    auto t0 = tStart;
+
     // Map dynamic game objects to world
     float gw = (float)gs.gw, gh=(float)gs.gh;
     auto toWorld = [&](float gx, float gy)->Vec3 {
@@ -161,6 +168,9 @@ void SoftRenderer::render(const GameState &gs) {
 
     // For each pixel (low-res) produce color
     frameCounter++;
+    stats_ = SRStats{}; // reset
+    stats_.frame = frameCounter;
+    stats_.internalW = rtW; stats_.internalH = rtH;
     std::vector<float> hdr(rtW*rtH*3,0.0f);
     int pixels = rtW*rtH;
     // Samples-per-pixel logic:
@@ -173,6 +183,9 @@ void SoftRenderer::render(const GameState &gs) {
         int total = config.raysPerFrame;
         spp = std::max(1, total / std::max(1,pixels));
     }
+    // Path trace core
+    double totalBounces = 0.0;
+    int pathsTraced = 0;
     for (int y=0; y<rtH; ++y) {
         for (int x=0; x<rtW; ++x) {
             Vec3 col{0,0,0};
@@ -194,7 +207,8 @@ void SoftRenderer::render(const GameState &gs) {
                     ro = camPos;
                 }
                 Vec3 throughput{1,1,1};
-                for (int bounce=0; bounce<config.maxBounces; ++bounce) {
+                int bounce=0;
+                for (; bounce<config.maxBounces; ++bounce) {
                     Hit best; best.t=1e30f; bool hit=false;
                     // Walls: top/bottom (diffuse)
                     Hit tmp;
@@ -256,9 +270,26 @@ void SoftRenderer::render(const GameState &gs) {
                         ro = best.pos + rd*0.002f;
                         // metallic tint (cool steel)
                         throughput = throughput * Vec3{0.85f,0.88f,0.95f};
+                        // Russian roulette (configurable)
+                        if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
+                            float p = std::max(config.rouletteMinProb, std::max(throughput.x, std::max(throughput.y, throughput.z)));
+                            // random in [0,1)
+                            float rrand = (xorshift(seed)&65535) / 65535.0f;
+                            if (rrand > p) { bounce++; break; }
+                            throughput = throughput / p; // compensate to keep estimator unbiased
+                        }
                         continue;
                     }
+                    // Russian roulette for diffuse also (after shading)
+                    if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
+                        float p = std::max(config.rouletteMinProb, std::max(throughput.x, std::max(throughput.y, throughput.z)));
+                        float rrand = (xorshift(seed)&65535) / 65535.0f;
+                        if (rrand > p) { bounce++; break; }
+                        throughput = throughput / p;
+                    }
                 }
+                totalBounces += bounce; // bounced count for this path (includes terminal bounce or max)
+                pathsTraced++;
             }
             col = col / (float)spp;
             hdr[(y*rtW + x)*3 + 0] = col.x;
@@ -266,10 +297,22 @@ void SoftRenderer::render(const GameState &gs) {
             hdr[(y*rtW + x)*3 + 2] = col.z;
         }
     }
+    stats_.avgBounceDepth = (pathsTraced>0)? (float)(totalBounces / pathsTraced) : 0.0f;
+    auto tTraceEnd = clock::now();
+    stats_.spp = spp;
+    stats_.totalRays = spp * rtW * rtH;
+    stats_.msTrace = std::chrono::duration<float, std::milli>(tTraceEnd - t0).count();
+    t0 = tTraceEnd;
 
     // Temporal accumulation (exponential moving average) then simple spatial denoise
     temporalAccumulate(hdr);
+    auto tTempEnd = clock::now();
+    stats_.msTemporal = std::chrono::duration<float, std::milli>(tTempEnd - t0).count();
+    t0 = tTempEnd;
     spatialDenoise();
+    auto tDenoiseEnd = clock::now();
+    stats_.msDenoise = std::chrono::duration<float, std::milli>(tDenoiseEnd - t0).count();
+    t0 = tDenoiseEnd;
 
     // Upscale (nearest) + tone map to outW/outH pixel32
     for (int y=0; y<outH; ++y) {
@@ -288,6 +331,9 @@ void SoftRenderer::render(const GameState &gs) {
             pixel32[y*outW + x] = (0xFFu<<24) | (R<<16) | (G<<8) | (B);
         }
     }
+    auto tUpscaleEnd = clock::now();
+    stats_.msUpscale = std::chrono::duration<float, std::milli>(tUpscaleEnd - t0).count();
+    stats_.msTotal = std::chrono::duration<float, std::milli>(tUpscaleEnd - tStart).count();
 }
 
 void SoftRenderer::toneMapAndPack() {
