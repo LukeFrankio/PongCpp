@@ -334,6 +334,10 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
         // Elements order (for navigation): 7 base sliders, force rays checkbox, camera checkbox, RR enable checkbox,
         // RR start bounce slider, RR min prob slider, Reset Defaults button.
         state.ui_mode = 2; bool editing=true; int sel=0; 
+        // Keep a baseline copy for Cancel (Esc). If user hits Save we advance baseline.
+        Settings originalSettings = settings; 
+        bool cancelled = false; // set when Esc pressed
+        int saveFeedbackTicks = 0; // frames to show "Saved" feedback on button
         const int baseSliderCount = 7;
         const int totalItems = baseSliderCount + 1 /*force*/ + 1 /*camera*/ + 1 /*RR enable*/ + 1 /*RR start*/ + 1 /*RR min*/ + 1 /*Reset*/;
         auto clampSel=[&](int &v){ if(v<0)v=0; if(v>totalItems-1)v=totalItems-1; };
@@ -370,31 +374,49 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             int idxRRMin = baseSliderCount + 4;
             int idxReset = baseSliderCount + 5;
 
+            // compute content height for scroll bounds (up to last RR slider)
+            int cyRRMinTemp = baseY + (baseSliderCount+4)*rowH; 
+            int contentBottom = cyRRMinTemp + (int)round(80*ui_scale);
+            int topVisible = (int)round(80*ui_scale);
+            int bottomPanelH = (int)round(130*ui_scale); // static panel height (buttons + legend)
+            int usableHeight = h - bottomPanelH;
+            maxScroll = (std::max)(0, contentBottom - usableHeight + topVisible);
+            int panelTop = h - bottomPanelH + (int)round(6*ui_scale);
+
             // Tooltip detection: determine which element mouse is over (include new items)
-            int hoverItem = -1; // 0..sliderCount-1 sliders, others mapped above
-            {
-                int mx = state.mouse_x; int my = state.mouse_y;
-                // sliders regions (bar height area)
+            int hoverItem = -1; // 0..sliderCount-1 sliders, others mapped above, reset=12, save=13
+            int mx = state.mouse_x; int my = state.mouse_y;
+            bool pointerInPanel = my >= panelTop;
+            if (!pointerInPanel) {
+                // sliders regions (bar height area) - ignore those fully hidden behind panel
                 for (int i=0;i<sliderCount;i++) {
                     int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
-                    RECT bar={bx,by,bx+barW,by+barH};
-                    if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) { hoverItem = i; break; }
+                    int byBottom = by + barH;
+                    if (by >= panelTop || byBottom >= panelTop) {
+                        // Skip: hidden or clipped by panel
+                    } else {
+                        RECT bar={bx,by,bx+barW,by+barH};
+                        if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) { hoverItem = i; break; }
+                    }
                 }
                 if (hoverItem==-1) {
-                    int cyForce = baseY + baseSliderCount*rowH; RECT cbForce={centerX - (int)(220*ui_scale), cyForce - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyForce + (int)(16*ui_scale)};
-                    int cyCam = baseY + (baseSliderCount+1)*rowH; RECT cbCam={centerX - (int)(220*ui_scale), cyCam - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyCam + (int)(16*ui_scale)};
-                    int cyRRE = baseY + (baseSliderCount+2)*rowH; RECT cbRRE={centerX - (int)(220*ui_scale), cyRRE - (int)(16*ui_scale), centerX+(int)(220*ui_scale), cyRRE + (int)(16*ui_scale)};
-                    int cyRRStart = baseY + (baseSliderCount+3)*rowH; RECT rrStartBar={centerX - barW/2, cyRRStart + (int)round(14*ui_scale), centerX + barW/2, cyRRStart + (int)round(14*ui_scale) + barH};
-                    int cyRRMin = baseY + (baseSliderCount+4)*rowH; RECT rrMinBar={centerX - barW/2, cyRRMin + (int)round(14*ui_scale), centerX + barW/2, cyRRMin + (int)round(14*ui_scale) + barH};
-                    int cyReset = baseY + (baseSliderCount+5)*rowH; RECT resetBtn={centerX - (int)(160*ui_scale), cyReset - (int)(18*ui_scale), centerX + (int)(160*ui_scale), cyReset + (int)(18*ui_scale)};
-                    if (mx>=cbForce.left && mx<=cbForce.right && my>=cbForce.top && my<=cbForce.bottom) hoverItem=idxForce;
-                    else if (mx>=cbCam.left && mx<=cbCam.right && my>=cbCam.top && my<=cbCam.bottom) hoverItem=idxCamera;
-                    else if (mx>=cbRRE.left && mx<=cbRRE.right && my>=cbRRE.top && my<=cbRRE.bottom) hoverItem=idxRREnable;
-                    else if (mx>=rrStartBar.left && mx<=rrStartBar.right && my>=rrStartBar.top && my<=rrStartBar.bottom) hoverItem=idxRRStart;
-                    else if (mx>=rrMinBar.left && mx<=rrMinBar.right && my>=rrMinBar.top && my<=rrMinBar.bottom) hoverItem=idxRRMin;
-                    else if (mx>=resetBtn.left && mx<=resetBtn.right && my>=resetBtn.top && my<=resetBtn.bottom) hoverItem=idxReset;
+                    int cyForce = baseY + baseSliderCount*rowH; int cyCam = baseY + (baseSliderCount+1)*rowH; int cyRRE = baseY + (baseSliderCount+2)*rowH; int cyRRStart = baseY + (baseSliderCount+3)*rowH; int cyRRMin = baseY + (baseSliderCount+4)*rowH; int cyReset = baseY + (baseSliderCount+5)*rowH; 
+                    auto midRectHit=[&](int cy){ return cy < panelTop && mx >= centerX - (int)(220*ui_scale) && mx <= centerX + (int)(220*ui_scale) && my >= cy - (int)(16*ui_scale) && my <= cy + (int)(16*ui_scale); };
+                    if (midRectHit(cyForce)) hoverItem=idxForce;
+                    else if (midRectHit(cyCam)) hoverItem=idxCamera;
+                    else if (midRectHit(cyRRE)) hoverItem=idxRREnable;
+                    else {
+                        // RR start slider bar
+                        int byS = cyRRStart + (int)round(14*ui_scale);
+                        if (cyRRStart < panelTop && my>=byS && my<=byS+barH && mx>=centerX-barW/2 && mx<=centerX+barW/2) hoverItem=idxRRStart; 
+                        int byM = cyRRMin + (int)round(14*ui_scale);
+                        if (hoverItem==-1 && cyRRMin < panelTop && my>=byM && my<=byM+barH && mx>=centerX-barW/2 && mx<=centerX+barW/2) hoverItem=idxRRMin;
+                        int cyResetCheck = cyReset; // old reset (still allow tooltip if visible)
+                        if (hoverItem==-1 && cyResetCheck < panelTop && mx>=centerX - (int)(160*ui_scale) && mx<=centerX + (int)(160*ui_scale) && my>=cyResetCheck - (int)(18*ui_scale) && my<=cyResetCheck + (int)(18*ui_scale)) hoverItem=idxReset;
+                    }
                 }
             }
+            // (panel buttons tooltip detection later after panel drawn sets hoverItem to 12/13)
             for (int i=0;i<sliderCount;i++) {
                 int y = baseY + i*rowH;
                 bool hot = (sel==i);
@@ -441,13 +463,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 double t = double(settings.pt_rr_min_prob_pct - 1) / double(90 - 1); if (t<0) t=0; if (t>1) t=1;
                 RECT fill={bx,by,bx+(int)(barW*t),by+barH}; HBRUSH bf2=CreateSolidBrush(rrMinHot?RGB(120,180,255):RGB(90,120,180)); FillRect(memDC,&fill,bf2); DeleteObject(bf2);
             }
-            // compute content height for scroll bounds (up to last RR slider)
-            int contentBottom = cyRRMin + (int)round(80*ui_scale);
-            int topVisible = (int)round(80*ui_scale);
-            int bottomPanelH = (int)round(130*ui_scale); // static panel height (buttons + legend)
-            int usableHeight = h - bottomPanelH;
-            // Avoid Windows macro collision with 'max' by using the parenthesized form
-            maxScroll = (std::max)(0, contentBottom - usableHeight + topVisible);
+            // Avoid Windows macro collision with 'max' already handled above when computing maxScroll
 
             // Mouse wheel scrolling (accumulated deltas)
             if (state.mouse_wheel_delta != 0) {
@@ -493,7 +509,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             }
 
             // Static bottom panel (buttons + legend)
-            RECT panelR = { (int)round(30*ui_scale), h - bottomPanelH + (int)round(6*ui_scale), w - (int)round(30*ui_scale), h - (int)round(6*ui_scale) };
+            RECT panelR = { (int)round(30*ui_scale), panelTop, w - (int)round(30*ui_scale), h - (int)round(6*ui_scale) };
             HBRUSH pb = CreateSolidBrush(RGB(22,22,34)); FillRect(memDC,&panelR,pb); DeleteObject(pb);
             FrameRect(memDC,&panelR,(HBRUSH)GetStockObject(GRAY_BRUSH));
             int btnAreaH = (int)round(48*ui_scale);
@@ -509,11 +525,18 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             };
             bool hoverReset = (state.mouse_x>=resetBtnR.left && state.mouse_x<=resetBtnR.right && state.mouse_y>=resetBtnR.top && state.mouse_y<=resetBtnR.bottom);
             bool hoverSave  = (state.mouse_x>=saveBtnR.left  && state.mouse_x<=saveBtnR.right  && state.mouse_y>=saveBtnR.top  && state.mouse_y<=saveBtnR.bottom);
+            if (saveFeedbackTicks>0) saveFeedbackTicks--; // countdown feedback
+            const wchar_t* saveLabel = (saveFeedbackTicks>0)?L"Saved":L"Save Settings";
             drawButton(resetBtnR, L"Reset Defaults", hoverReset, RGB(60,35,35), RGB(90,50,50));
-            drawButton(saveBtnR,  L"Save Settings", hoverSave,  RGB(35,55,70), RGB(55,85,110));
+            drawButton(saveBtnR,  saveLabel, hoverSave,  RGB(35,55,70), RGB(55,85,110));
             RECT legendR = { panelR.left + (int)round(10*ui_scale), btnRow.bottom + (int)round(6*ui_scale), panelR.right - (int)round(10*ui_scale), panelR.bottom - (int)round(10*ui_scale) };
             std::wstring legend = L"Enter=Close  Esc=Cancel  Arrows/Drag adjust  PgUp/PgDn/Wheel  Ctrl+Click numeric entry";
             SetTextColor(memDC, RGB(200,200,215)); DrawTextW(memDC, legend.c_str(), -1, &legendR, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+
+            // If pointer is inside panel, assign hoverItem for tooltips AFTER drawing
+            if (pointerInPanel) {
+                if (hoverReset) hoverItem = 12; else if (hoverSave) hoverItem = 13; // map to tooltip indices
+            }
 
             // Tooltip rendering near cursor with semi-transparent background
             if (hoverItem!=-1) {
@@ -531,9 +554,8 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                     case 9: tip = L"Enable probabilistic early termination to reduce average path length."; break;
                     case 10: tip = L"Bounce depth at which Russian roulette begins to test termination."; break;
                     case 11: tip = L"Minimum survival probability clamp for roulette (higher keeps more paths)."; break;
-                    case 12: tip = L"Static reset button at bottom restores defaults."; break;
-                    case 13: tip = L"Reset all settings (static button)."; break;
-                    case 14: tip = L"Save current settings to file immediately."; break;
+                    case 12: tip = L"Reset all settings to defaults."; break;
+                    case 13: tip = L"Save current settings to file immediately."; break;
                 }
                 if (tip && *tip) {
                     SIZE sz={0,0}; GetTextExtentPoint32W(memDC, tip, (int)wcslen(tip), &sz);
@@ -580,11 +602,12 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 scrollOffset -= (int)(h*0.5); if (scrollOffset<0) scrollOffset=0; state.key_down[VK_PRIOR]=false; }
             if (state.key_down[VK_NEXT]) { // PageDown
                 scrollOffset += (int)(h*0.5); if (scrollOffset>maxScroll) scrollOffset=maxScroll; state.key_down[VK_NEXT]=false; }
-            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; editing=false; }
+            if (state.key_down[VK_ESCAPE]) { state.key_down[VK_ESCAPE]=false; cancelled=true; settings = originalSettings; editing=false; }
             if (state.key_down[VK_RETURN]) { state.key_down[VK_RETURN]=false; editing=false; }
             // Ctrl+Click on a slider: direct numeric entry (basic modal capture)
             if (state.last_click_x!=-1 && (GetKeyState(VK_CONTROL) & 0x8000)) {
                 int mx = state.last_click_x; int my = state.last_click_y; state.last_click_x=-1; state.last_click_y=-1;
+                if (my < panelTop) { // only allow numeric entry if not inside panel
                 for (int i=0;i<7;i++) {
                     int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
                     RECT bar={bx,by,bx+barW,by+barH};
@@ -617,13 +640,15 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                         break;
                     }
                 }
+                }
             }
             // Mouse drag sliders
-            if (state.mouse_pressed) {
+            if (state.mouse_pressed && state.mouse_y < panelTop) {
                 int mx = state.mouse_x; int my = state.mouse_y;
                 for (int i=0;i<sliderCount;i++) {
                     int y = baseY + i*rowH; int bx = centerX - barW/2; int by = y + (int)round(14*ui_scale);
                     RECT bar={bx,by,bx+barW,by+barH};
+                    if (by >= panelTop) continue; // hidden behind panel
                     if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
                         double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
                         int val = sliders[i].minv + (int)std::round(tt*(sliders[i].maxv - sliders[i].minv));
@@ -636,6 +661,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 {
                     int bx = centerX - barW/2; int by = (baseY + (baseSliderCount+3)*rowH) + (int)round(14*ui_scale);
                     RECT bar={bx,by,bx+barW,by+barH};
+                    if (by < panelTop)
                     if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
                         double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
                         int val = 1 + (int)std::round(tt*(16 - 1)); if (val<1) val=1; if (val>16) val=16;
@@ -645,6 +671,7 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
                 {
                     int bx = centerX - barW/2; int by = (baseY + (baseSliderCount+4)*rowH) + (int)round(14*ui_scale);
                     RECT bar={bx,by,bx+barW,by+barH};
+                    if (by < panelTop)
                     if (mx>=bar.left && mx<=bar.right && my>=bar.top && my<=bar.bottom) {
                         double tt = double(mx - bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1;
                         int val = 1 + (int)std::round(tt*(90 - 1)); if (val<1) val=1; if (val>90) val=90;
@@ -655,29 +682,33 @@ int run_win_pong(HINSTANCE hInstance, int nCmdShow) {
             // Mouse click checkboxes on release
             if (state.last_click_x!=-1) {
                 int cx = state.last_click_x; int cy = state.last_click_y;
-                auto hitRect=[&](int yCenter, int halfH){ RECT r={centerX - (int)(220*ui_scale), yCenter - halfH, centerX + (int)(220*ui_scale), yCenter + halfH}; return cx>=r.left && cx<=r.right && cy>=r.top && cy<=r.bottom; };
-                if (hitRect(cyForce, (int)(16*ui_scale))) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; sel=idxForce; }
-                else if (hitRect(cyCam, (int)(16*ui_scale))) { settings.pt_use_ortho = settings.pt_use_ortho?0:1; sel=idxCamera; }
-                else if (hitRect(cyRRE, (int)(16*ui_scale))) { settings.pt_rr_enable = settings.pt_rr_enable?0:1; sel=idxRREnable; }
-                // static bottom panel buttons
-                else {
-                    int bottomPanelH = (int)round(130*ui_scale);
-                    RECT panelR = { (int)round(30*ui_scale), h - bottomPanelH + (int)round(6*ui_scale), w - (int)round(30*ui_scale), h - (int)round(6*ui_scale) };
+                auto hitRect=[&](int yCenter, int halfH){ if (yCenter+halfH >= panelTop) return false; RECT r={centerX - (int)(220*ui_scale), yCenter - halfH, centerX + (int)(220*ui_scale), yCenter + halfH}; return cx>=r.left && cx<=r.right && cy>=r.top && cy<=r.bottom; };
+                if (cy < panelTop && hitRect(cyForce, (int)(16*ui_scale))) { settings.pt_force_full_pixel_rays = settings.pt_force_full_pixel_rays?0:1; sel=idxForce; }
+                else if (cy < panelTop && hitRect(cyCam, (int)(16*ui_scale))) { settings.pt_use_ortho = settings.pt_use_ortho?0:1; sel=idxCamera; }
+                else if (cy < panelTop && hitRect(cyRRE, (int)(16*ui_scale))) { settings.pt_rr_enable = settings.pt_rr_enable?0:1; sel=idxRREnable; }
+                // static bottom panel buttons (only if click inside panel)
+                else if (cy >= panelTop) {
                     int btnAreaH = (int)round(48*ui_scale);
                     RECT btnRow = { panelR.left + (int)round(12*ui_scale), panelR.top + (int)round(10*ui_scale), panelR.right - (int)round(12*ui_scale), panelR.top + btnAreaH };
                     int btnGap = (int)round(20*ui_scale);
                     int btnW = (btnRow.right - btnRow.left - btnGap)/2;
-                    RECT resetBtnR = { btnRow.left, btnRow.top, btnRow.left + btnW, btnRow.bottom };
-                    RECT saveBtnR  = { resetBtnR.right + btnGap, btnRow.top, resetBtnR.right + btnGap + btnW, btnRow.bottom };
-                    if (cx>=resetBtnR.left && cx<=resetBtnR.right && cy>=resetBtnR.top && cy<=resetBtnR.bottom) {
-                        settings.pt_rays_per_frame = 1; settings.pt_max_bounces = 5; settings.pt_internal_scale = 10; settings.pt_roughness = 0; settings.pt_emissive = 100; settings.pt_accum_alpha = 75; settings.pt_denoise_strength = 25; settings.pt_force_full_pixel_rays = 1; settings.pt_use_ortho = 1; settings.pt_rr_enable = 1; settings.pt_rr_start_bounce = 2; settings.pt_rr_min_prob_pct = 10; }
-                    else if (cx>=saveBtnR.left && cx<=saveBtnR.right && cy>=saveBtnR.top && cy<=saveBtnR.bottom) { settingsMgr.save(exeDir + L"settings.json", settings); }
+                    RECT resetBtnR2 = { btnRow.left, btnRow.top, btnRow.left + btnW, btnRow.bottom };
+                    RECT saveBtnR2  = { resetBtnR2.right + btnGap, btnRow.top, resetBtnR2.right + btnGap + btnW, btnRow.bottom };
+                    if (cx>=resetBtnR2.left && cx<=resetBtnR2.right && cy>=resetBtnR2.top && cy<=resetBtnR2.bottom) {
+                        settings.pt_rays_per_frame = 1; settings.pt_max_bounces = 5; settings.pt_internal_scale = 10; settings.pt_roughness = 0; settings.pt_emissive = 100; settings.pt_accum_alpha = 75; settings.pt_denoise_strength = 25; settings.pt_force_full_pixel_rays = 1; settings.pt_use_ortho = 1; settings.pt_rr_enable = 1; settings.pt_rr_start_bounce = 2; settings.pt_rr_min_prob_pct = 10; originalSettings = settings; sel=idxReset; }
+                    else if (cx>=saveBtnR2.left && cx<=saveBtnR2.right && cy>=saveBtnR2.top && cy<=saveBtnR2.bottom) { settingsMgr.save(exeDir + L"settings.json", settings); originalSettings = settings; saveFeedbackTicks = 60; }
                 }
                 state.last_click_x=-1; state.last_click_y=-1;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(15));
         }
-        state.ui_mode = 1; settings_changed = true; // ensure persistence after close
+        state.ui_mode = 1; 
+        if (!cancelled) {
+            // Mark changed so caller persists once; Save button already persisted to disk
+            settings_changed = true; 
+        } else {
+            // Cancelled: do not mark changed (settings already restored to baseline)
+        }
     };
 
     // Ensure WindowProc knows we're in the menu so mouse clicks map to menu options
