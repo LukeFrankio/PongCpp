@@ -1,4 +1,12 @@
-﻿#pragma once
+/**
+ * @file high_scores_view.h
+ * @brief High scores display and management interface
+ * 
+ * This file defines the HighScoresView class which provides a user
+ * interface for viewing and managing high score entries.
+ */
+
+#pragma once
 #include <vector>
 #include <string>
 #include <windows.h> // for HDC

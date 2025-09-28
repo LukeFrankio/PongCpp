@@ -1,3 +1,11 @@
+/**
+ * @file settings_panel.h
+ * @brief Path tracer settings panel for Windows GUI
+ * 
+ * Path Tracer Settings Panel abstraction extracted from monolithic game_win.cpp.
+ * Handles rendering and interaction for path tracer configuration settings.
+ */
+
 // Path Tracer Settings Panel abstraction extracted from monolithic game_win.cpp
 // Responsibilities:
 //  - Render all path tracer tunables (sliders, checkboxes, buttons, tooltips)
