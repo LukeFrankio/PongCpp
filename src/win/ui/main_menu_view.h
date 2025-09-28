@@ -1,3 +1,12 @@
+/**
+ * @file main_menu_view.h
+ * @brief Main menu view for Windows GUI application
+ * 
+ * Main menu view abstraction extracted from monolithic game_win.cpp.
+ * Responsible for drawing configuration menu, handling user interaction,
+ * and managing game settings.
+ */
+
 // Main menu view abstraction extracted from monolithic game_win.cpp
 // Responsible for:
 //  - Drawing configuration menu (control mode, AI difficulty, renderer mode, path tracer settings entry)

@@ -5,7 +5,7 @@ Welcome to PongCpp! This guide will help you understand and play both versions o
 ## Table of Contents
 
 1. [Getting Started](#getting-started)
-2. [Console Version](#console-version)
+2. [Console Version](#console-version)  
 3. [Windows GUI Version](#windows-gui-version)
 4. [Game Rules](#game-rules)
 5. [Controls](#controls)
@@ -67,6 +67,27 @@ The Windows GUI version provides a modern graphical interface with additional fe
 
 ### Getting Started
 
+Choose the version that best fits your system and preferences:
+
+### Console Version (`pong` or `pong.exe`)
+
+The console version runs in any terminal and is perfect for:
+- Systems without GUI support
+- Remote/SSH sessions  
+- Minimal resource usage
+- Cross-platform compatibility
+
+### Windows GUI Version (`pong_win.exe`)
+
+The GUI version provides enhanced features:
+- Smooth graphics and animations
+- Mouse control support
+- Settings persistence
+- High score tracking
+- Configuration menus
+
+## Console Version
+
 1. Double-click `pong_win.exe` or run it from the command line
 2. The game window will open and display the main game area
 3. The game starts immediately
@@ -114,7 +135,7 @@ Score points by getting the ball past your opponent's paddle.
 - Normal: Good tracking with realistic limitations
 - Hard: Fast reactions, nearly perfect play
 
-## Game Controls
+## Controls
 
 ### Console Version Controls
 
@@ -194,7 +215,7 @@ The Windows version tracks high scores automatically:
 
 **Build issues:**
 
-- Make sure you have CMake 10+ installed
+- Make sure you have CMake 3.10+ installed
 - For Windows, use Visual Studio or MSVC compiler
 - For Linux, ensure g++ or clang++ supports C++17
 

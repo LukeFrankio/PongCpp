@@ -59,8 +59,6 @@ static void enable_dpi_awareness() {
  * Enables DPI awareness and launches the main game window.
  * 
  * @param hInstance Handle to current application instance
- * @param hPrevInstance Handle to previous instance (always NULL)
- * @param lpCmdLine Command line arguments as string
  * @param nCmdShow Window display state (maximized, minimized, etc.)
  * @return Application exit code
  */

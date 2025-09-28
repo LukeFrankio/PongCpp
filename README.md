@@ -15,51 +15,31 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 
 - Native Win32/GDI windowed interface
 
-### Experimental Path Tracing Renderer (Win32 Only)
+### Advanced Rendering Options (Windows GUI)
 
-An optional pure CPU software path tracer (still only Win32 + GDI `StretchDIBits`) provides a soft glowy aesthetic. It is fully parameter‑driven (no fixed quality presets anymore).
+The Windows GUI version includes multiple rendering modes:
 
-Configuration menu entries:
+#### Classic GDI Renderer
+- Fast, traditional 2D graphics using Windows GDI
+- Crisp, pixel-perfect rendering suitable for all systems
+- Minimal CPU usage and excellent performance
 
-- Renderer: Classic | Path Tracer
-- Path Tracer Settings… (opens modal with live sliders)
+#### Software Path Tracer (Experimental)
+- Pure CPU-based ray tracing renderer for realistic lighting effects
+- Configurable parameters for quality vs performance trade-offs
+- Creates soft, glowing aesthetic with realistic reflections and lighting
 
-Current path tracer parameters (all persisted in `settings.json`):
+**Path Tracer Configuration:**
+- **Rays per Frame**: Controls rendering quality (higher = less noise, more CPU time)
+- **Max Bounces**: Light bounce depth (more bounces = more realistic lighting)
+- **Internal Resolution**: Rendering scale (lower = faster, higher = sharper)
+- **Material Properties**: Metallic roughness, emissive intensity
+- **Post-Processing**: Temporal accumulation, spatial denoising
 
-| Setting (UI Label)        | JSON Field                | Range / Units                  | Effect |
-|---------------------------|---------------------------|--------------------------------|--------|
-| Rays / Frame              | `pt_rays_per_frame`       | 100 – 200000 (step 100)        | Total ray budget per frame (or per pixel if force toggle ON). Higher = less noise, more CPU time. |
-| Max Bounces               | `pt_max_bounces`          | 1 – 8                          | Path depth. More bounces capture more indirect light but cost more rays. |
-| Internal Scale %          | `pt_internal_scale`       | 25 – 100 %                     | Internal rendering resolution relative to window. Lower = faster, blurrier. |
-| Metal Roughness %         | `pt_roughness`            | 0 – 100 %                      | 0 = mirror paddles, 100 = very rough (diffuse-ish) reflections. |
-| Emissive %                | `pt_emissive`             | 50 – 300 %                     | Scales ball light intensity (100% = base). |
-| Accum Alpha %             | `pt_accum_alpha`          | 1 – 50 %                       | Temporal blend factor (EMA). Higher = faster convergence but more ghosting; 10–20% typical. |
-| Denoise %                 | `pt_denoise_strength`     | 0 – 100 %                      | Strength of 3x3 spatial blur (0 = off). |
-| Force 1 ray / pixel (ON)  | `pt_force_full_pixel_rays`| 0 / 1                          | Interpret Rays/Frame as rays PER pixel instead of a global pool. Good for consistent sampling at small resolutions. |
-
-Notes:
-
-- Changing any parameter automatically resets the accumulation history to avoid stale noise patterns.
-- When Force 1 ray/pixel is OFF the ray budget is evenly distributed (integer division) and may yield <1 spp for very large windows (still at least 1 ray/pixel via min). Turn it ON if you prefer stable sampling per pixel (at the cost of potentially large total ray counts).
-- Metallic paddles give clearer silhouettes than the earlier glass prototype while still producing highlight variety via roughness.
-
-Implementation details:
-
-- Pure C++17 + Win32 (no GPU APIs)
-- Internal low‑resolution float buffer, upscaled each frame
-- Dynamic samples per pixel derived from ray budget and internal resolution
-- Temporal accumulation (exponential moving average) + optional 3×3 spatial denoise
-- Simple materials: diffuse walls, emissive sphere, metallic paddles with roughness perturbation
-- Classic outline overlay (paddles + ball highlight) for crisp gameplay silhouettes
-
-Performance tips:
-
-- Start with Internal Scale 50–70% and ~5000–15000 Rays/Frame.
-- Increase Accum Alpha slowly if you want faster convergence; too high causes visible ghost trails.
-- Use Denoise 50–80% for a good quality/performance compromise.
-- Large windows + Force 1 ray/pixel + high Rays/Frame can become very CPU heavy—dial one back if FPS drops.
-
-Legacy fields `quality` and presets remain in the JSON for backward compatibility but are ignored by the new renderer logic.
+**Performance Notes:**
+- Path tracer is CPU-intensive and intended for modern multi-core processors
+- Start with lower settings and adjust based on your system's performance
+- Classic renderer is recommended for older systems or when maximum frame rate is desired
 
 - DPI awareness for high-resolution displays
 - Multiple control modes:
@@ -179,26 +159,31 @@ Or via the batch script (still requires ENFORCE_64BIT override if you reconfigur
 
 ## Configuration
 
-The Windows GUI version stores persistent configuration in `settings.json`. Example (fields trimmed):
+The Windows GUI version automatically saves and loads configuration from `settings.json`. All settings can be modified through the in-game menus:
 
-```jsonc
+- **Right-click** during gameplay to access the configuration menu
+- **Renderer Settings** to choose between Classic GDI and Path Tracer
+- **Path Tracer Settings** for detailed ray tracing configuration
+- **Control Settings** to switch between keyboard and mouse control
+- **AI Difficulty** to adjust computer opponent strength
+
+Example `settings.json` structure:
+```json
 {
-  "control_mode": 0,          // 0=keyboard,1=mouse
-  "ai": 1,                    // 0=easy,1=normal,2=hard
-  "renderer": 1,              // 0=classic,1=path tracer
-  "quality": 1,               // legacy (ignored by path tracer)
-  "pt_rays_per_frame": 8000,
-  "pt_max_bounces": 3,
-  "pt_internal_scale": 60,
-  "pt_roughness": 15,
-  "pt_emissive": 100,
-  "pt_accum_alpha": 12,
-  "pt_denoise_strength": 70,
-  "pt_force_full_pixel_rays": 0
+  "control_mode": 1,              // 0=keyboard, 1=mouse
+  "ai": 1,                        // 0=easy, 1=normal, 2=hard  
+  "renderer": 0,                  // 0=classic, 1=path tracer
+  "pt_rays_per_frame": 8000,      // Path tracer: rays per frame
+  "pt_max_bounces": 3,            // Path tracer: maximum light bounces
+  "pt_internal_scale": 60,        // Path tracer: render resolution %
+  "pt_roughness": 15,             // Path tracer: surface roughness %
+  "pt_emissive": 100,             // Path tracer: light intensity %
+  "pt_accum_alpha": 12,           // Path tracer: temporal blending %
+  "pt_denoise_strength": 70       // Path tracer: noise reduction %
 }
 ```
 
-Adjust values via the in‑game Path Tracer Settings modal (recommended) rather than manual edits.
+**Note:** It's recommended to use the in-game settings menus rather than editing the JSON file directly, as the UI provides real-time preview and validation.
 
 ## High Scores
 
@@ -208,19 +193,42 @@ The Windows GUI version tracks high scores in `highscores.json`. Players can ent
 
 ```text
 src/
-├── core/              # Platform-agnostic game logic
-│   ├── game_core.cpp  # Main game simulation, physics, AI
-│   └── game_core.h    # GameCore class, GameState struct
-├── main.cpp           # Console version entry point
-├── game.cpp/.h        # Console game loop, rendering, input
-├── platform.h         # Platform abstraction interface
-├── platform_win.cpp   # Windows console implementation
-├── platform_posix.cpp # POSIX console implementation
-└── win/               # Windows GUI-specific code
-    ├── main_win.cpp   # GUI entry point, DPI awareness
-    ├── game_win.cpp/.h # Win32/GDI rendering, input, menus
-    ├── settings.cpp/.h # JSON settings persistence
-    └── highscores.cpp/.h # JSON high score persistence
+├── core/                   # Platform-independent game logic
+│   ├── game_core.cpp       # Main game simulation, physics, AI
+│   └── game_core.h         # GameCore class, GameState struct
+├── console/                # Console version implementation
+│   ├── game.cpp/.h         # Console game loop, rendering, input
+│   └── main.cpp            # Console entry point
+├── platform/               # Platform abstraction layer
+│   ├── platform.h          # Platform interface definition
+│   ├── platform_posix.cpp  # POSIX/Linux implementation
+│   └── platform_win.cpp    # Windows console implementation
+├── main.cpp                # Legacy console entry point
+├── game.cpp/.h             # Legacy console interface
+├── platform.h              # Legacy platform abstraction
+├── platform_*.cpp          # Legacy platform implementations
+└── win/                    # Windows GUI implementation
+    ├── app/                # Application management
+    ├── events/             # Event system
+    ├── input/              # Input handling
+    ├── integration/        # Windows system integration
+    ├── persistence/        # Settings and data persistence
+    ├── platform/           # Windows-specific platform code
+    ├── rendering/          # Rendering engines (GDI, path tracer)
+    ├── ui/                 # User interface components
+    ├── main_win.cpp        # GUI entry point, DPI awareness
+    ├── game_win.cpp/.h     # Main game window and logic
+    ├── settings.cpp/.h     # Settings management
+    └── highscores.cpp/.h   # High score tracking
+```
+
+**Documentation:**
+```text  
+docs/
+├── README.md               # Documentation overview
+├── user/                   # User guides and tutorials
+├── developer/              # Technical documentation
+└── doxygen/                # Generated API documentation (after build)
 ```
 
 ## Physics & Gameplay
