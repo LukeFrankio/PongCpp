@@ -20,6 +20,7 @@ struct Settings {
     int ai = 1;           ///< AI difficulty: 0=easy, 1=normal, 2=hard
     int renderer = 0;     ///< 0=classic GDI, 1=path tracer
     int quality = 1;      ///< Deprecated quality preset (legacy)
+    int game_mode = 0;    ///< Game mode: 0=Classic,1=ThreeEnemies,2=Obstacles,3=MultiBall
     // New path tracer parameter sliders (persisted as ints for simplicity)
     int pt_rays_per_frame = 10;     ///< Total primary rays per frame (distributed over render target)
     int pt_max_bounces = 4;           ///< Maximum bounces (1-8 reasonable)

@@ -42,6 +42,7 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("ai", s.ai);
     extractInt("renderer", s.renderer);
     extractInt("quality", s.quality);
+    extractInt("game_mode", s.game_mode);
     extractInt("pt_rays_per_frame", s.pt_rays_per_frame);
     extractInt("pt_max_bounces", s.pt_max_bounces);
     extractInt("pt_internal_scale", s.pt_internal_scale);
@@ -69,6 +70,7 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"ai\": " << s.ai << ",\n";
     ofs << "  \"renderer\": " << s.renderer << ",\n";
     ofs << "  \"quality\": " << s.quality << ",\n"; // legacy
+    ofs << "  \"game_mode\": " << s.game_mode << ",\n";
     ofs << "  \"pt_rays_per_frame\": " << s.pt_rays_per_frame << ",\n";
     ofs << "  \"pt_max_bounces\": " << s.pt_max_bounces << ",\n";
     ofs << "  \"pt_internal_scale\": " << s.pt_internal_scale << ",\n";

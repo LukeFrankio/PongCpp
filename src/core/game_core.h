@@ -12,6 +12,43 @@
 #include <vector>
 
 /**
+ * @brief Available game modes
+ * 
+ * Classic: Original two paddle pong
+ * ThreeEnemies: Player vs right paddle while additional autonomous paddles guard top & bottom
+ * Obstacles: Classic paddles plus moving obstacle blocks in center area
+ * MultiBall: Multiple balls active simultaneously (chaos mode)
+ */
+enum class GameMode {
+    Classic = 0,
+    ThreeEnemies,
+    Obstacles,
+    MultiBall
+};
+
+/**
+ * @brief Obstacle block used in obstacle game mode
+ */
+struct Obstacle {
+    double x = 0.0;    ///< Center X
+    double y = 0.0;    ///< Center Y
+    double w = 4.0;    ///< Width
+    double h = 2.0;    ///< Height
+    double vx = 0.0;   ///< Horizontal velocity (for moving obstacles mode)
+    double vy = 0.0;   ///< Vertical velocity
+};
+
+/**
+ * @brief Ball state (supports multi-ball mode)
+ */
+struct BallState {
+    double x = 0.0;
+    double y = 0.0;
+    double vx = 0.0;
+    double vy = 0.0;
+};
+
+/**
  * @brief Game state structure containing all dynamic game data
  * 
  * This structure holds the complete state of a Pong game including
@@ -27,6 +64,19 @@ struct GameState {
     int paddle_h = 5;      ///< Paddle height in game units
     int score_left = 0;    ///< Left player score
     int score_right = 0;   ///< Right player score
+    
+    // Extended paddles for advanced modes
+    double top_x = 0.0;    ///< Top horizontal paddle X (center) (ThreeEnemies mode)
+    double bottom_x = 0.0; ///< Bottom horizontal paddle X (center) (ThreeEnemies mode)
+    int paddle_w = 8;      ///< Horizontal paddle width
+
+    // Obstacles (Obstacles mode)
+    std::vector<Obstacle> obstacles; ///< Active obstacles
+
+    // Multi-ball
+    std::vector<BallState> balls;    ///< Active balls (ball_x/ball_y mirror balls[0])
+
+    GameMode mode = GameMode::Classic; ///< Current game mode
 };
 
 /**
@@ -131,9 +181,30 @@ public:
      */
     void set_ai_speed(double m) { ai_speed = m; }
 
+    /**
+     * @brief Change current game mode and reset relevant state
+     */
+    void set_mode(GameMode m);
+    GameMode mode() const { return s.mode; }
+
+    /**
+     * @brief Spawn an extra ball (used in MultiBall mode)
+     */
+    void spawn_ball(double speed_scale = 1.0);
+
+    /**
+     * @brief Access balls vector (read-only)
+     */
+    const std::vector<BallState>& balls() const { return s.balls; }
+
+    /**
+     * @brief Access obstacles vector (read-only)
+     */
+    const std::vector<Obstacle>& get_obstacles() const { return s.obstacles; }
+
 private:
     GameState s;                    ///< Current game state
-    double vx, vy;                  ///< Ball velocity components
+    double vx, vy;                  ///< Legacy primary ball velocity (mirrors balls[0])
     double ai_speed = 1.0;          ///< AI difficulty multiplier
     
     /// @name Paddle Physics State

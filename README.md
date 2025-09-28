@@ -10,6 +10,11 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 - Cross-platform support (Windows/Linux/POSIX)
 - Keyboard controls (W/S keys and arrow keys)
 - Simple AI opponent
+- Multiple game modes (press 1-4 during play):
+  - 1 Classic: Standard two-paddle Pong
+  - 2 Three Enemies: Extra top & bottom AI paddles reflect balls
+  - 3 Obstacles: Moving blocker bricks in arena center
+  - 4 MultiBall: Several balls active simultaneously
 
 ### Windows GUI Version
 
@@ -148,6 +153,7 @@ Or via the batch script (still requires ENFORCE_64BIT override if you reconfigur
 - **W/S**: Move left paddle up/down
 - **Arrow Keys**: Alternative paddle controls
 - **Q**: Quit game
+- **1 / 2 / 3 / 4**: Switch game mode (Classic / Three Enemies / Obstacles / MultiBall)
 
 ### GUI Version
 
@@ -245,6 +251,10 @@ The game features realistic Pong physics:
 - **Paddle Interaction**: Ball spin affected by paddle velocity and contact point
 - **AI Intelligence**: Three difficulty levels with different reaction speeds
 - **Collision Detection**: Precise ball-to-paddle collision with proper normal calculation
+- **Extended Modes**:
+  - Three Enemies: Horizontal AI paddles track incoming balls at top & bottom boundaries
+  - Obstacles: Moving AABB bricks add ricochet dynamics while scoring rules remain side-based
+  - MultiBall: Additional balls spawn with varying directions for chaotic play
 
 ## Development
 

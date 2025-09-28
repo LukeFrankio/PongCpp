@@ -15,10 +15,17 @@ void HudOverlay::draw(const GameState& gs, const SRStats* stats, HDC dc, int w, 
 	int yPad = xPad;
 	std::wstring score = std::to_wstring(gs.score_left) + L" - " + std::to_wstring(gs.score_right);
 	// Semi-transparent background for readability
-	HBRUSH back = CreateSolidBrush(RGB(8,8,12)); RECT bg{0,0,(int)(260*ui),(int)(120*ui)}; FillRect(dc,&bg,back); DeleteObject(back);
+	HBRUSH back = CreateSolidBrush(RGB(8,8,12)); RECT bg{0,0,(int)(280*ui),(int)(140*ui)}; FillRect(dc,&bg,back); DeleteObject(back);
 	drawText(dc, score, xPad, yPad);
 	int lineH = (int)(18*ui + 0.5);
 	int line = 1;
+	// Game mode line (requires GameMode enum names; rely on order in game_core.h)
+	std::wstring modeName = L"Classic";
+	// Heuristic: determine mode by presence of obstacles / extra paddles / multiple balls
+	if (gs.mode == GameMode::ThreeEnemies) modeName = L"Three Enemies";
+	else if (gs.mode == GameMode::Obstacles) modeName = L"Obstacles";
+	else if (gs.mode == GameMode::MultiBall) modeName = L"MultiBall";
+	drawText(dc, L"Mode: " + modeName, xPad, yPad + lineH*line++);
 	if(stats){
 		wchar_t buf[256];
 		swprintf(buf,256,L"PT %.1fms | %d spp", stats->msTotal, stats->spp); drawText(dc, buf, xPad, yPad + lineH*line++);

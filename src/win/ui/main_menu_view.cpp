@@ -56,8 +56,8 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 	int mx = input.mx; int my = input.my;
 	int hoverIndex = -1;
 	int baseX = winW/2 - (int)(170*ui_scale + 0.5);
-	int ys[7] = { (int)(120 * ui_scale + 0.5), (int)(170 * ui_scale + 0.5), (int)(220 * ui_scale + 0.5), (int)(270 * ui_scale + 0.5), (int)(330 * ui_scale + 0.5), (int)(380 * ui_scale + 0.5), (int)(430 * ui_scale + 0.5) };
-	for (int i=0;i<7;i++) {
+	int ys[8] = { (int)(120 * ui_scale + 0.5), (int)(170 * ui_scale + 0.5), (int)(220 * ui_scale + 0.5), (int)(270 * ui_scale + 0.5), (int)(320 * ui_scale + 0.5), (int)(370 * ui_scale + 0.5), (int)(420 * ui_scale + 0.5), (int)(470 * ui_scale + 0.5) };
+	for (int i=0;i<8;i++) {
 	int pad = (int)((10.0 * ui_scale > 6.0)? (10.0 * ui_scale) : 6.0);
 	int wboxRef = (int)(260.0 * ui_scale + 0.5);
 	if (wboxRef < 260) wboxRef = 260;
@@ -78,13 +78,22 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 		drawTextCentered(memDC, text, (rb.left + rb.right)/2, (rb.top + rb.bottom)/2);
 	};
 
+	// Acquire current game mode string from settings_
+	std::wstring gmLabel;
+	switch(settings_->game_mode){
+		case 0: gmLabel=L"Game Mode: Classic"; break; 
+		case 1: gmLabel=L"Game Mode: Three Enemies"; break; 
+		case 2: gmLabel=L"Game Mode: Obstacles"; break; 
+		case 3: gmLabel=L"Game Mode: MultiBall"; break; 
+		default: gmLabel=L"Game Mode: ?"; break; }
 	drawOption(0, (ctrlMode==0)?L"Control: Keyboard":L"Control: Mouse", baseX, ys[0]);
 	drawOption(1, (aiDiff==0)?L"AI: Easy":(aiDiff==1)?L"AI: Normal":L"AI: Hard", baseX, ys[1]);
 	drawOption(2, (rendererMode==0)?L"Renderer: Classic":L"Renderer: Path Tracer", baseX, ys[2]);
-	drawOption(3, L"Path Tracer Settings...", baseX, ys[3]);
-	drawOption(4, L"Start Game", baseX, ys[4]);
-	drawOption(5, L"Manage High Scores", baseX, ys[5]);
-	drawOption(6, L"Quit", baseX, ys[6]);
+	drawOption(3, gmLabel, baseX, ys[3]);
+	drawOption(4, L"Path Tracer Settings...", baseX, ys[4]);
+	drawOption(5, L"Start Game", baseX, ys[5]);
+	drawOption(6, L"Manage High Scores", baseX, ys[6]);
+	drawOption(7, L"Quit", baseX, ys[7]);
 
 	// High scores right side (top 5)
 	SetTextColor(memDC, RGB(180,180,220));
@@ -103,25 +112,27 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 		menu_click_index = hoverIndex;
 	}
 
-	if (input.just_pressed(VK_DOWN)) { menuIndex++; if (menuIndex>6) menuIndex=6; }
+	if (input.just_pressed(VK_DOWN)) { menuIndex++; if (menuIndex>7) menuIndex=7; }
 	if (input.just_pressed(VK_UP)) { menuIndex--; if (menuIndex<0) menuIndex=0; }
 	if (input.just_pressed(VK_LEFT)) {
 		if (menuIndex==0) { ctrlMode = 0; settings_->control_mode = 0; result.settingsChanged = true; }
 		else if (menuIndex==1) { if (aiDiff>0) { aiDiff--; settings_->ai = aiDiff; result.settingsChanged = true; } }
 		else if (menuIndex==2) { rendererMode = 0; settings_->renderer = 0; result.settingsChanged = true; }
+		else if (menuIndex==3) { if (settings_->game_mode>0) { settings_->game_mode--; result.settingsChanged = true; } }
 	}
 	if (input.just_pressed(VK_RIGHT)) {
 		if (menuIndex==0) { ctrlMode = 1; settings_->control_mode = 1; result.settingsChanged = true; }
 		else if (menuIndex==1) { if (aiDiff<2) { aiDiff++; settings_->ai = aiDiff; result.settingsChanged = true; } }
 		else if (menuIndex==2) { rendererMode = 1; settings_->renderer = 1; result.settingsChanged = true; }
+		else if (menuIndex==3) { if (settings_->game_mode<3) { settings_->game_mode++; result.settingsChanged = true; } }
 	}
 	if (input.just_pressed(VK_ESCAPE)) { result.action = MenuAction::Quit; }
 	if (input.just_pressed(VK_RETURN)) {
 		switch(menuIndex) {
-			case 3: if (rendererMode==1) result.action = MenuAction::Settings; break;
-			case 4: result.action = MenuAction::Play; break;
-			case 5: result.action = MenuAction::Scores; break;
-			case 6: result.action = MenuAction::Quit; break;
+			case 4: if (rendererMode==1) result.action = MenuAction::Settings; break; // path tracer settings
+			case 5: result.action = MenuAction::Play; break;
+			case 6: result.action = MenuAction::Scores; break;
+			case 7: result.action = MenuAction::Quit; break;
 		}
 	}
 
@@ -132,10 +143,11 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 			case 0: ctrlMode = (ctrlMode==0)?1:0; settings_->control_mode = ctrlMode; result.settingsChanged = true; break;
 			case 1: aiDiff = (aiDiff+1)%3; settings_->ai = aiDiff; result.settingsChanged = true; break;
 			case 2: rendererMode = (rendererMode==0)?1:0; settings_->renderer = rendererMode; result.settingsChanged = true; break;
-			case 3: if (rendererMode==1) result.action = MenuAction::Settings; break;
-			case 4: result.action = MenuAction::Play; break;
-			case 5: result.action = MenuAction::Scores; break;
-			case 6: result.action = MenuAction::Quit; break;
+			case 3: settings_->game_mode = (settings_->game_mode+1)%4; result.settingsChanged = true; break;
+			case 4: if (rendererMode==1) result.action = MenuAction::Settings; break;
+			case 5: result.action = MenuAction::Play; break;
+			case 6: result.action = MenuAction::Scores; break;
+			case 7: result.action = MenuAction::Quit; break;
 		}
 	}
 
@@ -146,10 +158,11 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 			case 0: tip = L"Toggle control method"; break;
 			case 1: tip = L"Cycle AI difficulty"; break;
 			case 2: tip = L"Switch renderer"; break;
-			case 3: tip = (rendererMode==1)?L"Open path tracer settings":L"(Enable path tracer to edit settings)"; break;
-			case 4: tip = L"Start the game"; break;
-			case 5: tip = L"View / delete high scores"; break;
-			case 6: tip = L"Exit the game"; break;
+			case 3: tip = L"Select game mode"; break;
+			case 4: tip = (rendererMode==1)?L"Open path tracer settings":L"(Enable path tracer to edit settings)"; break;
+			case 5: tip = L"Start the game"; break;
+			case 6: tip = L"View / delete high scores"; break;
+			case 7: tip = L"Exit the game"; break;
 		}
 		if(!tip.empty()) {
 			SIZE ts{0,0}; GetTextExtentPoint32W(memDC, tip.c_str(), (int)tip.size(), &ts);

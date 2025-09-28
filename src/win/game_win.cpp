@@ -150,6 +150,13 @@ int run_win_pong(HINSTANCE inst, int show) {
             if(r.action){
                 switch(*r.action){
                     case MenuAction::Play: {
+                        // Set game mode based on settings before reset
+                        switch(settings.game_mode){
+                            case 0: session.core().set_mode(GameMode::Classic); break;
+                            case 1: session.core().set_mode(GameMode::ThreeEnemies); break;
+                            case 2: session.core().set_mode(GameMode::Obstacles); break;
+                            case 3: session.core().set_mode(GameMode::MultiBall); break;
+                        }
                         // Transition to gameplay: clear backbuffer and reset PT history so menu isn't blended over
                         st.ui_mode=0; 
                         HBRUSH black=(HBRUSH)GetStockObject(BLACK_BRUSH); RECT clr{0,0,winW,winH}; FillRect(st.memDC,&clr,black);

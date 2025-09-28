@@ -152,13 +152,44 @@ void SoftRenderer::render(const GameState &gs) {
         float wy = ((1.0f - gy/gh) - 0.5f)*3.0f;
         return {wx, wy, 0.0f};
     };
-    Vec3 ballC = toWorld((float)gs.ball_x, (float)gs.ball_y);
-    float ballR = 0.09f;
+    // Balls (multi-ball support). First ball is emissive, others dimmer.
+    std::vector<Vec3> ballCenters; std::vector<float> ballRs; ballCenters.reserve(gs.balls.size()); ballRs.reserve(gs.balls.size());
+    if (!gs.balls.empty()) {
+        for (size_t i=0;i<gs.balls.size();++i){
+            ballCenters.push_back(toWorld((float)gs.balls[i].x, (float)gs.balls[i].y));
+            ballRs.push_back(0.09f);
+        }
+    } else {
+        ballCenters.push_back(toWorld((float)gs.ball_x, (float)gs.ball_y));
+        ballRs.push_back(0.09f);
+    }
+    Vec3 ballC = ballCenters[0];
+    float ballR = ballRs[0];
     // Paddles: width ~ 2 game units => (2/gw)*4 world units
     float paddleHalfX = (2.0f/gw)*4.0f*0.5f; // half
     float paddleHalfY = ((float)gs.paddle_h/gh)*3.0f*0.5f;
     Vec3 leftCenter = toWorld(2.0f, (float)gs.left_y + (float)gs.paddle_h*0.5f);
     Vec3 rightCenter = toWorld(gw-2.0f, (float)gs.right_y + (float)gs.paddle_h*0.5f);
+    // Horizontal enemy paddles (ThreeEnemies mode) represented as thin boxes spanning horizontally
+    bool useHoriz = (gs.mode == GameMode::ThreeEnemies);
+    float horizHalfX = ((float)gs.paddle_w/gw)*4.0f*0.5f;
+    float horizHalfY = (0.5f/gh)*3.0f; // very thin
+    Vec3 topCenter = toWorld((float)gs.top_x, 1.0f);
+    Vec3 bottomCenter = toWorld((float)gs.bottom_x, gh - 2.0f);
+    float horizThickness = 0.04f;
+    // Obstacles as boxes
+    bool useObs = (gs.mode == GameMode::Obstacles);
+    struct Box { Vec3 bmin,bmax; };
+    std::vector<Box> obsBoxes;
+    if (useObs) {
+        for (auto &ob : gs.obstacles) {
+            Vec3 c = toWorld((float)ob.x, (float)ob.y);
+            float hw = (float)(ob.w/gw)*4.0f*0.5f;
+            float hh = (float)(ob.h/gh)*3.0f*0.5f;
+            Vec3 mn{c.x-hw, c.y-hh, -0.05f}; Vec3 mx{c.x+hw, c.y+hh, 0.05f};
+            obsBoxes.push_back({mn,mx});
+        }
+    }
     float paddleThickness = 0.05f;
 
     // Camera setup
@@ -187,17 +218,23 @@ void SoftRenderer::render(const GameState &gs) {
     bool fanoutMode = config.fanoutCombinatorial;
     // Shadow test toward ball center (treat ball as light emitter only, so skip self when hit.mat==1)
         auto shadowOccluded = [&](Vec3 from)->bool {
-            Vec3 to = ballC; Vec3 dir = to - from; float maxT = std::sqrt(std::max(0.0f, dot(dir,dir))); if (maxT < 1e-4f) return false; dir = dir / maxT;
+            // For now light is first ball center (others non-emissive or dim)
+            Vec3 to = ballCenters[0]; Vec3 dir = to - from; float maxT = std::sqrt(std::max(0.0f, dot(dir,dir))); if (maxT < 1e-4f) return false; dir = dir / maxT;
             Hit best; best.t = maxT - 1e-3f; Hit tmp;
-            // Planes (walls/back)
             if (intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)) return true;
             if (intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)) return true;
             if (intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)) return true;
-            // Slightly inflated paddle bounds for clearer shadows
             float inflate = 0.01f;
             if (intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
             if (intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
-            return false; // ball not self-occluding
+            if (useHoriz) {
+                if (intersectBox(from,dir, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
+                if (intersectBox(from,dir, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
+            }
+            if (useObs) {
+                for (auto &b : obsBoxes) if (intersectBox(from,dir, b.bmin, b.bmax, best.t, tmp, 0)) return true;
+            }
+            return false;
         };
     if (fanoutMode) {
     // Experimental exponential fan-out (adaptive sampled variant): original idea was full Cartesian expansion
@@ -250,9 +287,16 @@ void SoftRenderer::render(const GameState &gs) {
                 if (intersectPlane(r.ro,r.rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                 if (intersectPlane(r.ro,r.rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                 if (intersectPlane(r.ro,r.rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                if (intersectSphere(r.ro,r.rd,ballC,ballR,best.t,tmp,1)){ best=tmp; hit=true; }
+                for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(r.ro,r.rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
                 if (intersectBox(r.ro,r.rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
                 if (intersectBox(r.ro,r.rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                if (useHoriz) {
+                    if (intersectBox(r.ro,r.rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                    if (intersectBox(r.ro,r.rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                }
+                if (useObs) {
+                    for (auto &bx : obsBoxes) if (intersectBox(r.ro,r.rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; }
+                }
                 if (!hit) {
                     float t = 0.5f*(r.rd.y+1.0f);
                     Vec3 bgTop   {0.26f,0.30f,0.38f};
@@ -430,9 +474,16 @@ void SoftRenderer::render(const GameState &gs) {
                         if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                         if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                         if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                        if (intersectSphere(ro,rd,ballC,ballR,best.t,tmp,1)){ best=tmp; hit=true; }
+                        for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
                         if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
                         if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                        if (useHoriz) {
+                            if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                        }
+                        if (useObs) {
+                            for (auto &bx : obsBoxes) if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; }
+                        }
                         if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
                         if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
                         if (best.mat==0) { 

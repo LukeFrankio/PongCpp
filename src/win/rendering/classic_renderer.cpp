@@ -57,8 +57,56 @@ void ClassicRenderer::render(const GameState& gs, HDC dc, int winW, int winH, in
 	SelectObject(dc,op2); SelectObject(dc,ob2); DeleteObject(pb2);
 
 	// Ball
-	int bx=mapX(gs.ball_x), by=mapY(gs.ball_y); int br=(std::max)(4, (int)(8*ui+0.5));
-	HBRUSH ball=CreateSolidBrush(RGB(250,220,220)); HBRUSH shade=CreateSolidBrush(RGB(200,80,80));
-	HBRUSH oldB=(HBRUSH)SelectObject(dc,ball); Ellipse(dc,bx-br,by-br,bx+br,by+br); SelectObject(dc,shade); Ellipse(dc,bx-br/2,by-br/2,bx+br/2,by+br/2); SelectObject(dc,oldB);
-	DeleteObject(ball); DeleteObject(shade);
+	int br=(std::max)(4, (int)(8*ui+0.5));
+	// Draw all balls (first is primary, brighter)
+	for (size_t bi=0; bi<gs.balls.size(); ++bi) {
+		int bx = mapX(gs.balls[bi].x);
+		int by = mapY(gs.balls[bi].y);
+		COLORREF colMain = (bi==0)? RGB(250,220,220) : RGB(200,200,230);
+		COLORREF colInner = (bi==0)? RGB(200,80,80) : RGB(120,120,200);
+		HBRUSH ball=CreateSolidBrush(colMain); HBRUSH shade=CreateSolidBrush(colInner);
+		HBRUSH oldB=(HBRUSH)SelectObject(dc,ball); Ellipse(dc,bx-br,by-br,bx+br,by+br); SelectObject(dc,shade); Ellipse(dc,bx-br/2,by-br/2,bx+br/2,by+br/2); SelectObject(dc,oldB);
+		DeleteObject(ball); DeleteObject(shade);
+	}
+	if (gs.balls.empty()) {
+		int bx=mapX(gs.ball_x), by=mapY(gs.ball_y);
+		HBRUSH ball=CreateSolidBrush(RGB(250,220,220)); HBRUSH shade=CreateSolidBrush(RGB(200,80,80));
+		HBRUSH oldB=(HBRUSH)SelectObject(dc,ball); Ellipse(dc,bx-br,by-br,bx+br,by+br); SelectObject(dc,shade); Ellipse(dc,bx-br/2,by-br/2,bx+br/2,by+br/2); SelectObject(dc,oldB);
+		DeleteObject(ball); DeleteObject(shade);
+	}
+
+	// Obstacles
+	if (gs.mode == GameMode::Obstacles) {
+		HBRUSH obBrush = CreateSolidBrush(RGB(90,140,200)); HBRUSH old=(HBRUSH)SelectObject(dc, obBrush); HPEN nullPen=(HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+		for (auto &ob : gs.obstacles) {
+			int left = mapX(ob.x - ob.w/2.0);
+			int right = mapX(ob.x + ob.w/2.0);
+			int top = mapY(ob.y - ob.h/2.0);
+			int bottom = mapY(ob.y + ob.h/2.0);
+			Rectangle(dc, left, top, right, bottom);
+		}
+		SelectObject(dc, nullPen); SelectObject(dc, old); DeleteObject(obBrush);
+	}
+
+	// Horizontal enemy paddles (top/bottom)
+	if (gs.mode == GameMode::ThreeEnemies) {
+		int halfW = (int)((gs.paddle_w / (double)gs.gw) * winW * 0.5);
+		int topY = mapY(1.0);
+		int bottomY = mapY(gs.gh - 2.0);
+		int cxTop = mapX(gs.top_x);
+		int cxBottom = mapX(gs.bottom_x);
+		HBRUSH hpBrush = CreateSolidBrush(RGB(200,240,200)); HBRUSH old=(HBRUSH)SelectObject(dc,hpBrush); HPEN np2=(HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+		// Thickness scale with dpi
+		int thick = (std::max)(4, (int)(8*ui+0.5));
+		// Top paddle
+		RECT rTop{cxTop-halfW, topY-thick/2, cxTop+halfW, topY+thick/2}; FillRect(dc,&rTop,hpBrush);
+		int capR = thick/2;
+		Ellipse(dc, rTop.left-capR, rTop.top, rTop.left+capR, rTop.bottom);
+		Ellipse(dc, rTop.right-capR, rTop.top, rTop.right+capR, rTop.bottom);
+		// Bottom paddle
+		RECT rBot{cxBottom-halfW, bottomY-thick/2, cxBottom+halfW, bottomY+thick/2}; FillRect(dc,&rBot,hpBrush);
+		Ellipse(dc, rBot.left-capR, rBot.top, rBot.left+capR, rBot.bottom);
+		Ellipse(dc, rBot.right-capR, rBot.top, rBot.right+capR, rBot.bottom);
+		SelectObject(dc,np2); SelectObject(dc,old); DeleteObject(hpBrush);
+	}
 }
