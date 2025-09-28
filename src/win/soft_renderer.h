@@ -55,6 +55,13 @@ struct SRConfig {
     bool  rouletteEnable = true;          // Enable Russian roulette early termination
     int   rouletteStartBounce = 2;         // Start applying roulette at or after this bounce
     float rouletteMinProb = 0.1f;          // Minimum survival probability clamp
+
+    // Experimental: Exponential combinatorial fan-out mode.
+    // When enabled, for P pixels and maxBounces=B, we generate sum_{d=1..B} P^d rays (early termination disabled).
+    // WARNING: Explodes extremely fast. Guarded by safety caps.
+    bool  fanoutCombinatorial = false;     // Master toggle for experimental fan-out
+    uint64_t fanoutMaxTotalRays = 2000000;  // Hard cap to abort to protect performance
+    bool  fanoutAbortOnCap = true;          // If true, abort fan-out tracing when cap exceeded
 };
 
 // Runtime statistics for profiling / HUD overlay
@@ -68,6 +75,8 @@ struct SRStats {
     int internalH = 0;         // internal render target height
     int spp = 0;               // samples per pixel this frame
     int totalRays = 0;         // spp * internalW * internalH
+    int64_t projectedRays = 0; // projected (or capped) rays in fan-out mode
+    bool fanoutAborted = false; // set when fan-out aborted due to safety cap
     float avgBounceDepth = 0.0f; // average number of bounces executed per path
     unsigned frame = 0;        // frame counter for renderer (post increment)
 };

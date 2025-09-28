@@ -184,135 +184,290 @@ void SoftRenderer::render(const GameState &gs) {
         spp = std::max(1, total / std::max(1,pixels));
     }
     // Path trace core
-    double totalBounces = 0.0;
-    int pathsTraced = 0;
-    for (int y=0; y<rtH; ++y) {
-        for (int x=0; x<rtW; ++x) {
-            Vec3 col{0,0,0};
+    bool fanoutMode = config.fanoutCombinatorial;
+    // Shadow test toward ball center (treat ball as light emitter only, so skip self when hit.mat==1)
+        auto shadowOccluded = [&](Vec3 from)->bool {
+            Vec3 to = ballC; Vec3 dir = to - from; float maxT = std::sqrt(std::max(0.0f, dot(dir,dir))); if (maxT < 1e-4f) return false; dir = dir / maxT;
+            Hit best; best.t = maxT - 1e-3f; Hit tmp;
+            // Planes (walls/back)
+            if (intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)) return true;
+            if (intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)) return true;
+            if (intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)) return true;
+            // Slightly inflated paddle bounds for clearer shadows
+            float inflate = 0.01f;
+            if (intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
+            if (intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
+            return false; // ball not self-occluding
+        };
+    if (fanoutMode) {
+    // Experimental exponential fan-out (adaptive sampled variant): original idea was full Cartesian expansion
+    // spawning P^d rays (per primary pixel) which becomes intractable. We approximate by sampling a subset of
+    // target pixels per bounce so we can reach deeper bounces before hitting the cap. ProjectedRays still reports
+    // theoretical full count (clamped) while executed reflects actual sampled rays.
+        int P = pixels;
+        int B = config.maxBounces; if (B < 1) B = 1;
+        // Compute projected rays with overflow checks (use 128-bit via long double fallback)
+        long double proj = 0.0L; long double pPow = (long double)P; for(int d=1; d<=B; ++d){ proj += pPow; pPow *= (long double)P; if (proj > 9.22e18L) { proj = 9.22e18L; break; } }
+        stats_.projectedRays = (int64_t)std::llround(proj);
+        // Safety cap
+        uint64_t cap = config.fanoutMaxTotalRays; if (cap == 0) cap = 1000000;
+        // We implement breadth-first expansion; at depth d we generate P^d rays.
+        // Each ray shading result accumulates into its originating pixel (primary pixel index transmitted along).
+    struct FanRay { int pixelIndex; Vec3 ro; Vec3 rd; int depth; uint32_t seed; Vec3 throughput; bool alive; };
+        std::vector<FanRay> current, next;
+        current.reserve((size_t)std::min<uint64_t>(P, cap));
+        // Initialize primary rays (depth=0 will increment to 1 after first bounce shading for accounting)
+        for (int i=0;i<P;i++) {
+            int x = i % rtW; int y = i / rtW;
             uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-            for (int s=0; s<spp; ++s) {
-                float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
-                float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
-                Vec3 rd; Vec3 ro;
-                if (config.useOrtho) {
-                    // Map pixel to world X/Y directly matching toWorld scaling ([-2,2] x [-1.5,1.5])
-                    float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
-                    float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f; // invert to match screen space
-                    ro = { wx, wy, -1.0f }; // start slightly in front of scene origin plane
-                    rd = { 0,0,1 };         // shoot straight forward
-                } else {
-                    float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
-                    float py = (1-2*ry)*tanF;
-                    rd = norm(Vec3{px,py,1});
-                    ro = camPos;
-                }
-                Vec3 throughput{1,1,1};
-                int bounce=0;
-                for (; bounce<config.maxBounces; ++bounce) {
-                    Hit best; best.t=1e30f; bool hit=false;
-                    // Walls: top/bottom (diffuse)
-                    Hit tmp;
-                    if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                    if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                    // Back plane (soft grey)
-                    if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                    // Ball emissive
-                    if (intersectSphere(ro,rd,ballC,ballR,best.t,tmp,1)){ best=tmp; hit=true; }
-                    // Metallic paddles (mat=2)
-                    if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                    if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                    if (!hit) {
-                        // background gradient
-                        float t = 0.5f*(rd.y+1.0f);
-                        Vec3 bg = (1.0f-t)*Vec3{0.05f,0.07f,0.10f} + t*Vec3{0.02f,0.02f,0.04f};
-                        col = col + throughput * bg;
-                        break;
-                    }
-                    if (best.mat==1) { // emissive ball
-                        Vec3 emit{2.2f,1.4f,0.8f};
-                        emit = emit * config.emissiveIntensity;
-                        col = col + throughput * emit;
-                        break; // light ends path
-                    }
-                    if (best.mat==0) { // diffuse wall
-                        // cosine hemisphere sample
-                        Vec3 n = best.n;
-                        float r1 = 2*3.1415926f * ((xorshift(seed)&1023)/1024.0f);
-                        float r2 = (xorshift(seed)&1023)/1024.0f;
-                        float r2s = std::sqrt(r2);
-                        // build basis
-                        Vec3 w = n;
-                        Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0,1,0} : Vec3{1,0,0};
-                        Vec3 v = norm(cross(w,a));
-                        Vec3 u = cross(v,w);
-                        Vec3 d = norm( u * (std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2) );
-                        ro = best.pos + best.n*0.002f;
-                        rd = d;
-                        throughput = throughput * Vec3{0.55f,0.55f,0.58f};
-                        continue;
-                    }
-                    if (best.mat==2) { // metallic paddle: perfect reflection + roughness parameter
-                        Vec3 n = best.n;
-                        // perfect reflection direction
-                        float cosi = dot(rd, n);
-                        rd = rd - n * (2.0f * cosi);
-                        // add a small cosine-weighted perturbation for roughness
-                        float rough = config.metallicRoughness;
-                        float r1 = 2*3.1415926f*((xorshift(seed)&1023)/1024.0f);
-                        float r2 = (xorshift(seed)&1023)/1024.0f;
-                        float r2s = std::sqrt(r2);
-                        Vec3 w = norm(n);
-                        Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0,1,0} : Vec3{1,0,0};
-                        Vec3 v = norm(cross(w,a));
-                        Vec3 u = cross(v,w);
-                        Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
-                        rd = norm(rd*(1.0f-rough) + fuzz*rough);
-                        ro = best.pos + rd*0.002f;
-                        // metallic tint (cool steel)
-                        throughput = throughput * Vec3{0.85f,0.88f,0.95f};
-                        // Russian roulette (configurable)
-                        if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
-                            float p = std::max(config.rouletteMinProb, std::max(throughput.x, std::max(throughput.y, throughput.z)));
-                            // random in [0,1)
-                            float rrand = (xorshift(seed)&65535) / 65535.0f;
-                            if (rrand > p) { bounce++; break; }
-                            throughput = throughput / p; // compensate to keep estimator unbiased
-                        }
-                        continue;
-                    }
-                    // Russian roulette for diffuse also (after shading)
-                    if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
-                        float p = std::max(config.rouletteMinProb, std::max(throughput.x, std::max(throughput.y, throughput.z)));
-                        float rrand = (xorshift(seed)&65535) / 65535.0f;
-                        if (rrand > p) { bounce++; break; }
-                        throughput = throughput / p;
-                    }
-                }
-                totalBounces += bounce; // bounced count for this path (includes terminal bounce or max)
-                pathsTraced++;
+            float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
+            float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
+            Vec3 ro, rd;
+            if (config.useOrtho) {
+                float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
+                float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f;
+                ro = { wx, wy, -1.0f }; rd = {0,0,1};
+            } else {
+                float fov = 60.0f * 3.1415926f/180.0f; float tanF = std::tan(fov*0.5f);
+                float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
+                float py = (1-2*ry)*tanF; rd = norm(Vec3{px,py,1}); ro = {0,0,-5.0f};
             }
-            col = col / (float)spp;
-            hdr[(y*rtW + x)*3 + 0] = col.x;
-            hdr[(y*rtW + x)*3 + 1] = col.y;
-            hdr[(y*rtW + x)*3 + 2] = col.z;
+            current.push_back(FanRay{ i, ro, rd, 0, seed, Vec3{1,1,1}, true });
         }
+    std::vector<Vec3> pixelAccum(P, Vec3{0,0,0});
+    // Track how many radiance contributions each pixel received so we can normalize.
+    std::vector<uint32_t> contribCount(P, 0);
+    // Track how many rays have actually been shaded (at least primary rays)
+    uint64_t raysExecuted = current.size();
+        bool aborted=false;
+    for (int depth=0; depth < B; ++depth) {
+            // Process all rays in 'current'
+            for (auto &r : current) {
+                if (!r.alive) continue;
+                // Intersection loop similar to normal path tracer but no Russian roulette and no early termination suppression (we still allow emissive/backdrop to accumulate but we DO NOT spawn children for those).
+                Hit best; best.t=1e30f; bool hit=false; Hit tmp;
+                // Walls
+                if (intersectPlane(r.ro,r.rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                if (intersectPlane(r.ro,r.rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                if (intersectPlane(r.ro,r.rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                if (intersectSphere(r.ro,r.rd,ballC,ballR,best.t,tmp,1)){ best=tmp; hit=true; }
+                if (intersectBox(r.ro,r.rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                if (intersectBox(r.ro,r.rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                if (!hit) {
+                    float t = 0.5f*(r.rd.y+1.0f);
+                    Vec3 bgTop   {0.26f,0.30f,0.38f};
+                    Vec3 bgBottom{0.08f,0.10f,0.16f};
+                    Vec3 bg = (1.0f-t)*bgBottom + t*bgTop;
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * bg;
+                    contribCount[r.pixelIndex]++;
+                    r.alive=false; continue;
+                }
+                if (best.mat==1) {
+                    Vec3 emit{2.2f,1.4f,0.8f}; emit = emit * config.emissiveIntensity;
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * emit;
+                    contribCount[r.pixelIndex]++;
+                    r.alive=false; continue;
+                }
+                if (best.mat==0) {
+                    // diffuse sample
+                    Vec3 n = best.n; float r1 = 2*3.1415926f * ((xorshift(r.seed)&1023)/1024.0f); float r2 = (xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
+                    Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
+                    Vec3 d = norm( u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2) );
+                    r.ro = best.pos + best.n*0.002f; r.rd = d; r.throughput = r.throughput * Vec3{0.62f,0.64f,0.67f};
+                    // Direct lighting with shadow
+                    if(!shadowOccluded(best.pos + n*0.002f)){
+                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L = L*invDist; float ndotl = std::max(0.0f, dot(n,L));
+                        float atten = 1.0f / (4.0f*3.1415926f*std::max(1e-4f, dist2));
+                        Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity * 0.25f;
+                        Vec3 direct = emitColor * (ndotl * atten);
+                        pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct;
+                        contribCount[r.pixelIndex]++;
+                    }
+                    // Smaller micro-bounce contribution for global feel
+                    Vec3 bounceLight{0.015f,0.015f,0.017f};
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * bounceLight;
+                    contribCount[r.pixelIndex]++;
+                } else if (best.mat==2) {
+                    Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
+                    float rough = config.metallicRoughness; float r1 = 2*3.1415926f*((xorshift(r.seed)&1023)/1024.0f); float r2=(xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
+                    Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
+                    Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
+                    r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f; r.throughput = r.throughput * Vec3{0.86f,0.88f,0.94f};
+                    // Direct light with shadow (reduced on metal)
+                    if(!shadowOccluded(best.pos + n*0.002f)){
+                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.25f*0.8f; Vec3 direct=emitColor*(ndotl*atten); pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*direct; contribCount[r.pixelIndex]++; }
+                    Vec3 bounceLight{0.01f,0.01f,0.012f};
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * bounceLight;
+                    contribCount[r.pixelIndex]++;
+                }
+            }
+            // Spawn next generation: every surviving ray spawns P children replicating to every pixel index.
+            if (depth < B-1) {
+                next.clear();
+                // Determine alive count
+                int aliveCount=0; for (auto &r: current) if (r.alive) aliveCount++;
+                if (aliveCount==0) break;
+                // Remaining depth (excluding current) we want to budget rays across
+                int remainingDepths = (B-1) - depth;
+                if (remainingDepths < 1) remainingDepths = 1;
+                uint64_t budgetLeft = (cap > raysExecuted)? (cap - raysExecuted) : 0;
+                if (budgetLeft == 0) { aborted=true; stats_.fanoutAborted=true; break; }
+                // Per-ray budget heuristic: distribute remaining rays uniformly across remaining depths & alive rays
+                uint64_t perRayBudget = std::max<uint64_t>(1, budgetLeft / (uint64_t)aliveCount / (uint64_t)remainingDepths);
+                // Can't exceed full fan-out (P) per ray; sample without replacement when possible (Fisher-Yates style partial shuffle)
+                uint32_t globalSeedBase = (uint32_t)(frameCounter * 1315423911u + depth*2654435761u);
+                for (auto &r: current) {
+                    if (!r.alive) continue;
+                    uint64_t spawnCount = std::min<uint64_t>(P, perRayBudget);
+                    if (spawnCount==0) spawnCount=1;
+                    // If spawning all pixels (rare small resolutions) keep deterministic order
+                    if (spawnCount == (uint64_t)P) {
+                        for (int pix=0; pix<P; ++pix) {
+                            if (raysExecuted >= cap) { aborted=true; stats_.fanoutAborted=true; break; }
+                            next.push_back(FanRay{ pix, r.ro, r.rd, depth+1, r.seed ^ (pix*911u + depth*101u), r.throughput, true });
+                            raysExecuted++;
+                        }
+                        if (aborted) break;
+                    } else {
+                        // Sample unique pixel indices: partial Fisher-Yates using a local vector when spawnCount small
+                        // Optimization: if spawnCount > P/2, fall back to a bitmap selection
+                        if (spawnCount <= (uint64_t)P/2) {
+                            // reservoir of first P indices incremental shuffle until spawnCount selected
+                            std::vector<int> picks; picks.reserve((size_t)spawnCount);
+                            uint32_t lseed = r.seed ^ globalSeedBase;
+                            for (int t=0; t<P && (uint64_t)picks.size()<spawnCount; ++t) {
+                                // probability to take this index so we end with spawnCount on average
+                                uint64_t need = spawnCount - picks.size();
+                                uint64_t left = P - t;
+                                uint32_t rv = (xorshift(lseed)&0xFFFFFF);
+                                if (rv < (uint32_t)((need * 0xFFFFFFull)/left)) picks.push_back(t);
+                            }
+                            for (int pix: picks) {
+                                if (raysExecuted >= cap) { aborted=true; stats_.fanoutAborted=true; break; }
+                                next.push_back(FanRay{ pix, r.ro, r.rd, depth+1, r.seed ^ (pix*911u + depth*101u + pix*97u), r.throughput, true });
+                                raysExecuted++;
+                            }
+                            if (aborted) break;
+                        } else {
+                            // Large spawn fraction: create bitmap then iterate
+                            std::vector<uint8_t> used(P,0);
+                            uint32_t lseed = r.seed ^ (globalSeedBase*733u);
+                            uint64_t placed=0;
+                            while (placed < spawnCount) {
+                                if (raysExecuted >= cap) { aborted=true; stats_.fanoutAborted=true; break; }
+                                int pix = (int)(xorshift(lseed) % P);
+                                if (used[pix]) continue;
+                                used[pix]=1; placed++;
+                                next.push_back(FanRay{ pix, r.ro, r.rd, depth+1, r.seed ^ (pix*1664525u + depth*101u), r.throughput, true });
+                                raysExecuted++;
+                            }
+                            if (aborted) break;
+                        }
+                    }
+                }
+                if (!next.empty() && !aborted) current.swap(next);
+            }
+            if (raysExecuted >= cap) { aborted=true; stats_.fanoutAborted=true; break; }
+        }
+        // Ambient fallback for any rays that never hit emissive or background
+        if (!stats_.fanoutAborted) {
+            Vec3 amb{0.10f,0.11f,0.12f};
+            for (auto &r : current) {
+                if (r.alive) {
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * amb;
+                    contribCount[r.pixelIndex]++;
+                }
+            }
+        } else {
+            // Even if aborted due to cap, give minimal ambient so diagnostic isn't full black
+            Vec3 amb{0.04f,0.045f,0.05f};
+            for (auto &r : current) {
+                if (r.alive) {
+                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * amb;
+                    contribCount[r.pixelIndex]++;
+                }
+            }
+        }
+        // Accumulate pixel colors (average per generation count ~ use throughput sums). We have no per-ray radiance except background/emissive contributions already added.
+        for (int i=0;i<P;i++) {
+            Vec3 c = pixelAccum[i];
+            uint32_t cc = contribCount[i]; if (cc>0) c = c / (float)cc; // normalize
+            hdr[i*3+0] = c.x; hdr[i*3+1] = c.y; hdr[i*3+2] = c.z;
+        }
+        stats_.spp = 1;
+        stats_.totalRays = (int)std::min<uint64_t>(raysExecuted, (uint64_t)INT32_MAX);
+        // Skip temporal accumulation history reuse (makes little sense here) – treat as fresh frame
+        haveHistory = false;
+        // Jump to tone map path (reuse existing code after hdr filled)
+        auto tTraceEndFan = clock::now();
+        stats_.msTrace = std::chrono::duration<float,std::milli>(tTraceEndFan - t0).count();
+        accum = hdr; // no temporal / denoise
+    } else {
+        // Normal path tracing branch
+        std::vector<float> hdr(rtW*rtH*3,0.0f);
+        int pixels = rtW*rtH;
+        int spp = 1;
+        if (config.forceFullPixelRays) {
+            spp = std::max(1, config.raysPerFrame);
+        } else {
+            int total = config.raysPerFrame;
+            spp = std::max(1, total / std::max(1,pixels));
+        }
+        double totalBounces = 0.0; int pathsTraced = 0;
+        for (int y=0; y<rtH; ++y) {
+            for (int x=0; x<rtW; ++x) {
+                Vec3 col{0,0,0}; uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
+                for (int s=0; s<spp; ++s) {
+                    float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
+                    float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
+                    Vec3 rd; Vec3 ro;
+                    if (config.useOrtho) {
+                        float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
+                        float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f;
+                        ro = { wx, wy, -1.0f }; rd = {0,0,1};
+                    } else {
+                        float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
+                        float py = (1-2*ry)*tanF;
+                        rd = norm(Vec3{px,py,1}); ro = camPos;
+                    }
+                    Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
+                    for (; bounce<config.maxBounces; ++bounce) {
+                        Hit best; best.t=1e30f; bool hit=false; Hit tmp;
+                        if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                        if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                        if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                        if (intersectSphere(ro,rd,ballC,ballR,best.t,tmp,1)){ best=tmp; hit=true; }
+                        if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                        if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                        if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
+                        if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
+                        if (best.mat==0) { 
+                            Vec3 n=best.n; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f}; 
+                            // Direct lighting diffuse with shadow
+                            if(!shadowOccluded(best.pos + n*0.002f)){
+                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/std::max(1e-4f,dist2); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity; Vec3 direct=emitColor*(ndotl*atten); col = col + throughput * direct; }
+                        }
+                        else if (best.mat==2) { 
+                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*Vec3{0.86f,0.88f,0.94f}; 
+                            if(!shadowOccluded(best.pos + n*0.002f)){
+                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/std::max(1e-4f,dist2); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity; Vec3 direct=emitColor*(ndotl*atten*0.8f); col = col + throughput * direct; }
+                            if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; }}
+                        if (best.mat!=1 && best.mat!=0 && best.mat!=2){}
+                        if (best.mat==0) { if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; } }
+                    }
+                    if(!terminated){ Vec3 amb{0.15f,0.16f,0.18f}; col = col + throughput * amb; }
+                    totalBounces += bounce; pathsTraced++;
+                }
+                col = col / (float)spp;
+                hdr[(y*rtW + x)*3 + 0] = col.x; hdr[(y*rtW + x)*3 + 1] = col.y; hdr[(y*rtW + x)*3 + 2] = col.z;
+            }
+        }
+        stats_.avgBounceDepth = (pathsTraced>0)? (float)(totalBounces / pathsTraced) : 0.0f;
+        auto tTraceEnd = clock::now(); stats_.spp = spp; stats_.totalRays = spp * rtW * rtH; stats_.msTrace = std::chrono::duration<float, std::milli>(tTraceEnd - t0).count(); t0 = tTraceEnd;
+        temporalAccumulate(hdr); auto tTempEnd = clock::now(); stats_.msTemporal = std::chrono::duration<float, std::milli>(tTempEnd - t0).count(); t0 = tTempEnd;
+        spatialDenoise(); auto tDenoiseEnd = clock::now(); stats_.msDenoise = std::chrono::duration<float, std::milli>(tDenoiseEnd - t0).count(); t0 = tDenoiseEnd;
     }
-    stats_.avgBounceDepth = (pathsTraced>0)? (float)(totalBounces / pathsTraced) : 0.0f;
-    auto tTraceEnd = clock::now();
-    stats_.spp = spp;
-    stats_.totalRays = spp * rtW * rtH;
-    stats_.msTrace = std::chrono::duration<float, std::milli>(tTraceEnd - t0).count();
-    t0 = tTraceEnd;
-
-    // Temporal accumulation (exponential moving average) then simple spatial denoise
-    temporalAccumulate(hdr);
-    auto tTempEnd = clock::now();
-    stats_.msTemporal = std::chrono::duration<float, std::milli>(tTempEnd - t0).count();
-    t0 = tTempEnd;
-    spatialDenoise();
-    auto tDenoiseEnd = clock::now();
-    stats_.msDenoise = std::chrono::duration<float, std::milli>(tDenoiseEnd - t0).count();
-    t0 = tDenoiseEnd;
+    // If we were in normal mode, hdr/accum already processed; fanout mode set accum directly.
 
     // Upscale (nearest) + tone map to outW/outH pixel32
     for (int y=0; y<outH; ++y) {
@@ -322,9 +477,14 @@ void SoftRenderer::render(const GameState &gs) {
             float r = accum[(sy*rtW+sx)*3+0];
             float g = accum[(sy*rtW+sx)*3+1];
             float b = accum[(sy*rtW+sx)*3+2];
-            // simple tone map + gamma
-            auto tm = [](float c){ c = c/(1.0f+c); return std::pow(std::max(0.0f,c), 1.0f/2.2f); };
-            r = tm(r); g = tm(g); b = tm(b);
+            // Apply exposure before tone mapping to avoid overly dark appearance
+            const float exposure = 1.2f; // reduced exposure per user brightness feedback
+            r = 1.0f - std::exp(-r * exposure);
+            g = 1.0f - std::exp(-g * exposure);
+            b = 1.0f - std::exp(-b * exposure);
+            // Gamma correct
+            auto gfun = [](float c){ return std::pow(std::max(0.0f,c), 1.0f/2.2f); };
+            r = gfun(r); g = gfun(g); b = gfun(b);
             uint8_t R = (uint8_t)std::min(255.0f, r*255.0f + 0.5f);
             uint8_t G = (uint8_t)std::min(255.0f, g*255.0f + 0.5f);
             uint8_t B = (uint8_t)std::min(255.0f, b*255.0f + 0.5f);

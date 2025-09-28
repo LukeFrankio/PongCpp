@@ -19,36 +19,44 @@ static std::wstring utf8_to_w(const std::string &s) {
 }
 
 Settings SettingsManager::load(const std::wstring &path) {
-    Settings s;
+    Settings s; // defaults
     std::string p = w_to_utf8(path);
     std::ifstream ifs(p, std::ios::binary);
     if (!ifs) return s;
     std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    // naive parsing: find numeric tokens for known keys
-    auto findNum = [&](const std::string &key)->int{
-        size_t p = raw.find(key);
-        if (p==std::string::npos) return -1;
-        p = raw.find_first_of("0123456789", p);
-        if (p==std::string::npos) return -1;
-        return raw[p]-'0';
+
+    // Very small hand-rolled integer extractor: looks for "key" then ':' then optional whitespace then an integer (possibly multi-digit, optional leading minus though not used here)
+    auto extractInt = [&](const std::string &key, int &dst){
+        size_t pos = raw.find("\"" + key + "\"");
+        if (pos == std::string::npos) return;
+        pos = raw.find(':', pos);
+        if (pos == std::string::npos) return;
+        pos++;
+        while (pos < raw.size() && (raw[pos]==' '||raw[pos]=='\t')) pos++;
+        bool neg=false; if (pos<raw.size() && raw[pos]=='-'){ neg=true; pos++; }
+        long val=0; bool any=false;
+        while (pos < raw.size() && raw[pos]>='0' && raw[pos]<='9') { any=true; val = val*10 + (raw[pos]-'0'); pos++; }
+        if (!any) return; if (neg) val = -val; dst = (int)val;
     };
-    int cm = findNum("control_mode"); if (cm>=0) s.control_mode = cm;
-    int ai = findNum("\"ai\""); if (ai>=0) s.ai = ai;
-    int rend = findNum("renderer"); if (rend>=0) s.renderer = rend;
-    int qual = findNum("quality"); if (qual>=0) s.quality = qual;
-    auto loadOpt = [&](const char* key, int &dst){ int v = findNum(key); if (v>=0) dst = v; };
-    loadOpt("pt_rays_per_frame", s.pt_rays_per_frame);
-    loadOpt("pt_max_bounces", s.pt_max_bounces);
-    loadOpt("pt_internal_scale", s.pt_internal_scale);
-    loadOpt("pt_roughness", s.pt_roughness);
-    loadOpt("pt_emissive", s.pt_emissive);
-    loadOpt("pt_accum_alpha", s.pt_accum_alpha);
-    loadOpt("pt_denoise_strength", s.pt_denoise_strength);
-    loadOpt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
-    loadOpt("pt_use_ortho", s.pt_use_ortho);
-    loadOpt("pt_rr_enable", s.pt_rr_enable);
-    loadOpt("pt_rr_start_bounce", s.pt_rr_start_bounce);
-    loadOpt("pt_rr_min_prob_pct", s.pt_rr_min_prob_pct);
+    extractInt("control_mode", s.control_mode);
+    extractInt("ai", s.ai);
+    extractInt("renderer", s.renderer);
+    extractInt("quality", s.quality);
+    extractInt("pt_rays_per_frame", s.pt_rays_per_frame);
+    extractInt("pt_max_bounces", s.pt_max_bounces);
+    extractInt("pt_internal_scale", s.pt_internal_scale);
+    extractInt("pt_roughness", s.pt_roughness);
+    extractInt("pt_emissive", s.pt_emissive);
+    extractInt("pt_accum_alpha", s.pt_accum_alpha);
+    extractInt("pt_denoise_strength", s.pt_denoise_strength);
+    extractInt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
+    extractInt("pt_use_ortho", s.pt_use_ortho);
+    extractInt("pt_rr_enable", s.pt_rr_enable);
+    extractInt("pt_rr_start_bounce", s.pt_rr_start_bounce);
+    extractInt("pt_rr_min_prob_pct", s.pt_rr_min_prob_pct);
+    extractInt("pt_fanout_enable", s.pt_fanout_enable);
+    extractInt("pt_fanout_cap", s.pt_fanout_cap);
+    extractInt("pt_fanout_abort", s.pt_fanout_abort);
     return s;
 }
 
@@ -69,10 +77,13 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"pt_accum_alpha\": " << s.pt_accum_alpha << ",\n";
     ofs << "  \"pt_denoise_strength\": " << s.pt_denoise_strength << ",\n";
     ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << ",\n";
-    ofs << "  \"pt_use_ortho\": " << s.pt_use_ortho << "\n";
-    ofs << "  ,\"pt_rr_enable\": " << s.pt_rr_enable << ",\n";
+    ofs << "  \"pt_use_ortho\": " << s.pt_use_ortho << ",\n";
+    ofs << "  \"pt_rr_enable\": " << s.pt_rr_enable << ",\n";
     ofs << "  \"pt_rr_start_bounce\": " << s.pt_rr_start_bounce << ",\n";
     ofs << "  \"pt_rr_min_prob_pct\": " << s.pt_rr_min_prob_pct << "\n";
+    ofs << "  \"pt_fanout_enable\": " << s.pt_fanout_enable << ",\n";
+    ofs << "  \"pt_fanout_cap\": " << s.pt_fanout_cap << ",\n";
+    ofs << "  \"pt_fanout_abort\": " << s.pt_fanout_abort << "\n";
     ofs << "}\n";
     return true;
 }

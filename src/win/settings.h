@@ -34,6 +34,10 @@ struct Settings {
     int pt_rr_enable = 1;             ///< 1 = enable Russian roulette termination
     int pt_rr_start_bounce = 2;       ///< Bounce index at or after which roulette starts (1..16)
     int pt_rr_min_prob_pct = 10;      ///< Minimum survival probability percent (e.g. 10 => 0.10)
+    // Experimental combinatorial fan-out (dangerous)
+    int pt_fanout_enable = 0;         ///< 1 = enable exponential fan-out mode
+    int pt_fanout_cap = 2000000;      ///< Safety cap for total rays
+    int pt_fanout_abort = 1;          ///< 1 = abort when cap exceeded, 0 = continue (may freeze)
 };
 
 /**
