@@ -1,3 +1,8 @@
+/**
+ * @file docs/README.md
+ * @brief Documentation overview and navigation
+ */
+
 # PongCpp Documentation
 
 Welcome to the comprehensive documentation for PongCpp, a classic Pong game implementation in C++ with dual frontend support.
