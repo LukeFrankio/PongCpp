@@ -274,31 +274,25 @@ void SoftRenderer::render(const GameState &gs) {
                     Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 d = norm( u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2) );
                     r.ro = best.pos + best.n*0.002f; r.rd = d; r.throughput = r.throughput * Vec3{0.62f,0.64f,0.67f};
-                    // Direct lighting with shadow
+                    // Direct lighting with shadow (physically based attenuation). No artificial bounce light to preserve shadow contrast.
                     if(!shadowOccluded(best.pos + n*0.002f)){
                         Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L = L*invDist; float ndotl = std::max(0.0f, dot(n,L));
+                        // 1/(4πr^2) attenuation, scale down a little so overall scene brightness remains reasonable
                         float atten = 1.0f / (4.0f*3.1415926f*std::max(1e-4f, dist2));
-                        Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity * 0.25f;
+                        Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity * 0.35f; // slight boost to compensate for removed ambient fill
                         Vec3 direct = emitColor * (ndotl * atten);
                         pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct;
                         contribCount[r.pixelIndex]++;
                     }
-                    // Smaller micro-bounce contribution for global feel
-                    Vec3 bounceLight{0.015f,0.015f,0.017f};
-                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * bounceLight;
-                    contribCount[r.pixelIndex]++;
                 } else if (best.mat==2) {
                     Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
                     float rough = config.metallicRoughness; float r1 = 2*3.1415926f*((xorshift(r.seed)&1023)/1024.0f); float r2=(xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
                     Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
                     r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f; r.throughput = r.throughput * Vec3{0.86f,0.88f,0.94f};
-                    // Direct light with shadow (reduced on metal)
+                    // Direct light with shadow (reduced contribution vs diffuse by factor for metallic look)
                     if(!shadowOccluded(best.pos + n*0.002f)){
-                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.25f*0.8f; Vec3 direct=emitColor*(ndotl*atten); pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*direct; contribCount[r.pixelIndex]++; }
-                    Vec3 bounceLight{0.01f,0.01f,0.012f};
-                    pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * bounceLight;
-                    contribCount[r.pixelIndex]++;
+                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.28f; Vec3 direct=emitColor*(ndotl*atten*0.7f); pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*direct; contribCount[r.pixelIndex]++; }
                 }
             }
             // Spawn next generation: every surviving ray spawns P children replicating to every pixel index.
@@ -443,19 +437,19 @@ void SoftRenderer::render(const GameState &gs) {
                         if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
                         if (best.mat==0) { 
                             Vec3 n=best.n; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f}; 
-                            // Direct lighting diffuse with shadow
+                            // Direct lighting diffuse with shadow (physically-based attenuation)
                             if(!shadowOccluded(best.pos + n*0.002f)){
-                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/std::max(1e-4f,dist2); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity; Vec3 direct=emitColor*(ndotl*atten); col = col + throughput * direct; }
+                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*1.2f; Vec3 direct=emitColor*(ndotl*atten); col = col + throughput * direct; }
                         }
                         else if (best.mat==2) { 
                             Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*Vec3{0.86f,0.88f,0.94f}; 
                             if(!shadowOccluded(best.pos + n*0.002f)){
-                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/std::max(1e-4f,dist2); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity; Vec3 direct=emitColor*(ndotl*atten*0.8f); col = col + throughput * direct; }
+                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.9f; Vec3 direct=emitColor*(ndotl*atten*0.75f); col = col + throughput * direct; }
                             if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; }}
                         if (best.mat!=1 && best.mat!=0 && best.mat!=2){}
                         if (best.mat==0) { if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; } }
                     }
-                    if(!terminated){ Vec3 amb{0.15f,0.16f,0.18f}; col = col + throughput * amb; }
+                    if(!terminated){ Vec3 amb{0.05f,0.055f,0.06f}; col = col + throughput * amb; }
                     totalBounces += bounce; pathsTraced++;
                 }
                 col = col / (float)spp;
