@@ -14,7 +14,7 @@ void SettingsPanel::clampSel() { if (sel_ < 0) sel_ = 0; if (sel_ > totalItems_(
 void SettingsPanel::resetDefaults() {
 	if (!settings_) return;
 	settings_->pt_rays_per_frame = 1;
-	settings_->pt_max_bounces = 5;
+	settings_->pt_max_bounces = 1;
 	settings_->pt_internal_scale = 10;
 	settings_->pt_roughness = 0;
 	settings_->pt_emissive = 100;
