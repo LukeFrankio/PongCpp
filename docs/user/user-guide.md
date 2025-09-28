@@ -51,7 +51,7 @@ The console version displays the game using ASCII characters in your terminal wi
 - The ball bounces between paddles and walls
 - Score is displayed at the top
 
-### Controls
+### Console Controls
 
 | Key | Action |
 |-----|--------|
@@ -72,6 +72,7 @@ Choose the version that best fits your system and preferences:
 ### Console Version (`pong` or `pong.exe`)
 
 The console version runs in any terminal and is perfect for:
+
 - Systems without GUI support
 - Remote/SSH sessions  
 - Minimal resource usage
@@ -80,13 +81,14 @@ The console version runs in any terminal and is perfect for:
 ### Windows GUI Version (`pong_win.exe`)
 
 The GUI version provides enhanced features:
+
 - Smooth graphics and animations
 - Mouse control support
 - Settings persistence
 - High score tracking
 - Configuration menus
 
-## Console Version
+## Windows GUI — Quick Start
 
 1. Double-click `pong_win.exe` or run it from the command line
 2. The game window will open and display the main game area

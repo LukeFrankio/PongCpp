@@ -20,16 +20,19 @@ A classic Pong game implementation in C++ with dual frontend support: console an
 The Windows GUI version includes multiple rendering modes:
 
 #### Classic GDI Renderer
+
 - Fast, traditional 2D graphics using Windows GDI
 - Crisp, pixel-perfect rendering suitable for all systems
 - Minimal CPU usage and excellent performance
 
 #### Software Path Tracer (Experimental)
+
 - Pure CPU-based ray tracing renderer for realistic lighting effects
 - Configurable parameters for quality vs performance trade-offs
 - Creates soft, glowing aesthetic with realistic reflections and lighting
 
 **Path Tracer Configuration:**
+
 - **Rays per Frame**: Controls rendering quality (higher = less noise, more CPU time)
 - **Max Bounces**: Light bounce depth (more bounces = more realistic lighting)
 - **Internal Resolution**: Rendering scale (lower = faster, higher = sharper)
@@ -37,6 +40,7 @@ The Windows GUI version includes multiple rendering modes:
 - **Post-Processing**: Temporal accumulation, spatial denoising
 
 **Performance Notes:**
+
 - Path tracer is CPU-intensive and intended for modern multi-core processors
 - Start with lower settings and adjust based on your system's performance
 - Classic renderer is recommended for older systems or when maximum frame rate is desired
@@ -168,20 +172,21 @@ The Windows GUI version automatically saves and loads configuration from `settin
 - **AI Difficulty** to adjust computer opponent strength
 
 Example `settings.json` structure:
-```json
-{
-  "control_mode": 1,              // 0=keyboard, 1=mouse
-  "ai": 1,                        // 0=easy, 1=normal, 2=hard  
-  "renderer": 0,                  // 0=classic, 1=path tracer
-  "pt_rays_per_frame": 8000,      // Path tracer: rays per frame
-  "pt_max_bounces": 3,            // Path tracer: maximum light bounces
-  "pt_internal_scale": 60,        // Path tracer: render resolution %
-  "pt_roughness": 15,             // Path tracer: surface roughness %
-  "pt_emissive": 100,             // Path tracer: light intensity %
-  "pt_accum_alpha": 12,           // Path tracer: temporal blending %
-  "pt_denoise_strength": 70       // Path tracer: noise reduction %
-}
-```
+
+  ```json
+  {
+    "control_mode": 1,              // 0=keyboard, 1=mouse
+    "ai": 1,                        // 0=easy, 1=normal, 2=hard  
+    "renderer": 0,                  // 0=classic, 1=path tracer
+    "pt_rays_per_frame": 8000,      // Path tracer: rays per frame
+    "pt_max_bounces": 3,            // Path tracer: maximum light bounces
+    "pt_internal_scale": 60,        // Path tracer: render resolution %
+    "pt_roughness": 15,             // Path tracer: surface roughness %
+    "pt_emissive": 100,             // Path tracer: light intensity %
+    "pt_accum_alpha": 12,           // Path tracer: temporal blending %
+    "pt_denoise_strength": 70       // Path tracer: noise reduction %
+  }
+  ```
 
 **Note:** It's recommended to use the in-game settings menus rather than editing the JSON file directly, as the UI provides real-time preview and validation.
 
@@ -223,13 +228,14 @@ src/
 ```
 
 **Documentation:**
-```text  
-docs/
-├── README.md               # Documentation overview
-├── user/                   # User guides and tutorials
-├── developer/              # Technical documentation
-└── doxygen/                # Generated API documentation (after build)
-```
+
+  ```text  
+  docs/
+  ├── README.md               # Documentation overview
+  ├── user/                   # User guides and tutorials
+  ├── developer/              # Technical documentation
+  └── doxygen/                # Generated API documentation (after build)
+  ```
 
 ## Physics & Gameplay
 
