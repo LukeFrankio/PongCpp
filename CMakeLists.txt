@@ -46,25 +46,30 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${DIST_DIR}/release)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${DIST_DIR}/release)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${DIST_DIR}/debug)
 
-add_executable(pong
-    src/main.cpp
-    src/platform_win.cpp
-    src/platform_posix.cpp
-    src/game.cpp
-    src/core/game_core.cpp
+## Console target sources discovered recursively
+file(GLOB_RECURSE PONG_CONSOLE_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/console/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+)
+
+add_executable(pong ${PONG_CONSOLE_SOURCES})
+target_include_directories(pong PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Windowed Win32 Pong (no external libs)
 if (WIN32)
-    add_executable(pong_win
-        src/win/game_win.cpp
-        src/win/main_win.cpp
-        src/win/highscores.cpp
-        src/win/settings.cpp
-        src/win/soft_renderer.cpp
-        src/win/game_win.h
-        src/win/soft_renderer.h
-        src/core/game_core.cpp
+    ## Windows GUI target sources (recursive). We intentionally separate core & platform neutral code.
+    file(GLOB_RECURSE PONG_WIN_SOURCES
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/win/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp"
+    )
+    add_executable(pong_win ${PONG_WIN_SOURCES})
+    target_include_directories(pong_win PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     target_link_libraries(pong_win PRIVATE user32 gdi32)
     set_target_properties(pong_win PROPERTIES WIN32_EXECUTABLE YES)
@@ -135,11 +140,12 @@ add_custom_target(clean-dist
     COMMENT "Cleaning dist directory")
 
 # Print build information
-message(STATUS "PongCpp build configuration:")
+message(STATUS "PongCpp build configuration (recursive source discovery enabled):")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Documentation: ${BUILD_DOCUMENTATION}")
 message(STATUS "  Output directory: ${DIST_DIR}")
+message(STATUS "  Note: Using file(GLOB_RECURSE ...) for source discovery. If you add new source files, re-run CMake configure to ensure they're picked up.")
 if(WIN32)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         message(STATUS "  Windows GUI target: pong_win -> dist/debug/pong_win.exe")
