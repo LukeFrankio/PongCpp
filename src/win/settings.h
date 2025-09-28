@@ -23,7 +23,7 @@ struct Settings {
     int game_mode = 0;    ///< Game mode: 0=Classic,1=ThreeEnemies,2=Obstacles,3=MultiBall
     // New path tracer parameter sliders (persisted as ints for simplicity)
     int pt_rays_per_frame = 10;     ///< Total primary rays per frame (distributed over render target)
-    int pt_max_bounces = 4;           ///< Maximum bounces (1-8 reasonable)
+    int pt_max_bounces = 1;           ///< Maximum bounces (1-8 reasonable)
     int pt_internal_scale = 10;       ///< Internal resolution percentage (25..100)
     int pt_roughness = 15;            ///< Metallic roughness percent (0..100)
     int pt_emissive = 100;            ///< Emissive intensity percent for ball (50..300 mapped)
