@@ -84,6 +84,11 @@ struct SRStats {
     bool fanoutAborted = false; // set when fan-out aborted due to safety cap
     float avgBounceDepth = 0.0f; // average number of bounces executed per path
     unsigned frame = 0;        // frame counter for renderer (post increment)
+    // Phase 2 extended diagnostics
+    int earlyExitCount = 0;          // number of paths terminated due to low throughput threshold
+    int rouletteTerminations = 0;    // number of paths killed by Russian roulette
+    bool denoiseSkipped = false;     // true when denoise pass skipped due to quality heuristic
+    int threadsUsed = 1;             // number of threads used in last render (includes main)
 };
 
 class SoftRenderer {

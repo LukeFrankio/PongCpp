@@ -9,10 +9,30 @@
 #include <cstring>
 #include <cmath> // sqrt, tan, fabs, pow
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <cctype>
+
+// Adaptive threading state (global to translation unit)
+static std::atomic<float> g_srLastFrameMs{ 1000.0f };      // raw last frame
+static std::atomic<float> g_srEmaFrameMs{ 1000.0f };       // smoothed (EMA) frame time
+static std::atomic<unsigned> g_srAdaptiveThreads{ 0 };     // current chosen threads
+static std::atomic<unsigned> g_srLastLogged{ 0 };          // last logged value
+static std::atomic<bool> g_srInitialized{ false };
+static std::atomic<int>  g_srCooldown{ 0 };                // frames to wait before another downward adjustment
+
 
 // Simple XOR shift RNG for deterministic sampling
 static inline uint32_t xorshift(uint32_t &s) {
     s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s;
+}
+
+// Generate two uniform floats in [0,1) from a single RNG advance (packs into 16-bit halves)
+static inline void rng2(uint32_t &seed, float &u, float &v){
+    uint32_t r = xorshift(seed);
+    u = (r & 0xFFFF) * (1.0f/65536.0f);
+    v = (r >> 16)    * (1.0f/65536.0f);
 }
 
 struct Vec3 { float x,y,z; };
@@ -202,11 +222,16 @@ void SoftRenderer::render(const GameState &gs) {
 
     // For each pixel (low-res) produce color
     frameCounter++;
-    stats_ = SRStats{}; // reset
+    stats_ = SRStats{}; // reset (extended stats fields zeroed)
     stats_.frame = frameCounter;
     stats_.internalW = rtW; stats_.internalH = rtH;
     std::vector<float> hdr(rtW*rtH*3,0.0f);
     int pixels = rtW*rtH;
+    // Hoisted per-frame constants
+    float invRTW = (rtW>0)? 1.0f/(float)rtW : 0.0f;
+    float invRTH = (rtH>0)? 1.0f/(float)rtH : 0.0f;
+    float aspect = (rtH>0)? (float)rtW/(float)rtH : 1.0f;
+    // (tanF already computed for perspective)
     // Samples-per-pixel logic:
     //  - When forceFullPixelRays=false: raysPerFrame is a TOTAL budget distributed across pixels.
     //  - When forceFullPixelRays=true : raysPerFrame means rays PER pixel this frame.
@@ -301,6 +326,9 @@ void SoftRenderer::render(const GameState &gs) {
     };
     if (fanoutMode) {
     // Experimental exponential fan-out (adaptive sampled variant): original idea was full Cartesian expansion
+    // NOTE: This branch remains single-threaded intentionally. The combinatorial spawning pattern is used for
+    // diagnostics / research and parallelizing it would complicate ray budgeting & reproducibility. Normal path
+    // tracing branch (below) is fully multi-threaded.
     // spawning P^d rays (per primary pixel) which becomes intractable. We approximate by sampling a subset of
     // target pixels per bounce so we can reach deeper bounces before hitting the cap. ProjectedRays still reports
     // theoretical full count (clamped) while executed reflects actual sampled rays.
@@ -320,16 +348,18 @@ void SoftRenderer::render(const GameState &gs) {
         for (int i=0;i<P;i++) {
             int x = i % rtW; int y = i / rtW;
             uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-            float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
-            float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
+            float u1,u2; rng2(seed,u1,u2);
+            float rx = (x + u1)*invRTW;
+            float ry = (y + u2)*invRTH;
             Vec3 ro, rd;
             if (config.useOrtho) {
-                float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
-                float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f;
+                float jx,jy; rng2(seed,jx,jy); // reuse consolidated RNG
+                float wx = ((x + jx)*invRTW - 0.5f)*4.0f;
+                float wy = (((rtH-1-y) + jy)*invRTH - 0.5f)*3.0f;
                 ro = { wx, wy, -1.0f }; rd = {0,0,1};
             } else {
                 float fov = 60.0f * 3.1415926f/180.0f; float tanF = std::tan(fov*0.5f);
-                float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
+                float px = (2*rx -1)*tanF * aspect;
                 float py = (1-2*ry)*tanF; rd = norm(Vec3{px,py,1}); ro = {0,0,-5.0f};
             }
             current.push_back(FanRay{ i, ro, rd, 0, seed, Vec3{1,1,1}, true });
@@ -377,7 +407,7 @@ void SoftRenderer::render(const GameState &gs) {
                 }
                 if (best.mat==0) {
                     // diffuse sample
-                    Vec3 n = best.n; float r1 = 2*3.1415926f * ((xorshift(r.seed)&1023)/1024.0f); float r2 = (xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
+                    Vec3 n = best.n; float uA,uB; rng2(r.seed,uA,uB); float r1 = 2*3.1415926f * uA; float r2 = uB; float r2s=std::sqrt(r2);
                     Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 d = norm( u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2) );
                     r.ro = best.pos + best.n*0.002f; r.rd = d; r.throughput = r.throughput * Vec3{0.62f,0.64f,0.67f};
@@ -387,7 +417,7 @@ void SoftRenderer::render(const GameState &gs) {
                     // Paddle material: slightly tinted metal with diffuse under-layer
                     Vec3 paddleColor{0.25f,0.32f,0.6f};
                     Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
-                    float rough = config.metallicRoughness; float r1 = 2*3.1415926f*((xorshift(r.seed)&1023)/1024.0f); float r2=(xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
+                    float rough = config.metallicRoughness; float uA,uB; rng2(r.seed,uA,uB); float r1 = 2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2);
                     Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
                     r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f;
@@ -500,93 +530,220 @@ void SoftRenderer::render(const GameState &gs) {
         stats_.msTrace = std::chrono::duration<float,std::milli>(tTraceEndFan - t0).count();
         accum = hdr; // no temporal / denoise
     } else {
-        // Normal path tracing branch
+        // Normal path tracing branch (MULTITHREADED)
         std::vector<float> hdr(rtW*rtH*3,0.0f);
         int pixels = rtW*rtH;
         int spp = 1;
         if (config.forceFullPixelRays) {
             spp = std::max(1, config.raysPerFrame);
-        } else {
-            int total = config.raysPerFrame;
-            spp = std::max(1, total / std::max(1,pixels));
-        }
-        double totalBounces = 0.0; int pathsTraced = 0;
-        for (int y=0; y<rtH; ++y) {
-            for (int x=0; x<rtW; ++x) {
-                Vec3 col{0,0,0}; uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-                for (int s=0; s<spp; ++s) {
-                    float rx = (x + (xorshift(seed)&1023)/1024.0f)/(float)rtW;
-                    float ry = (y + (xorshift(seed)&1023)/1024.0f)/(float)rtH;
-                    Vec3 rd; Vec3 ro;
-                    if (config.useOrtho) {
-                        float wx = ((x + (xorshift(seed)&1023)/1024.0f)/(float)rtW - 0.5f)*4.0f;
-                        float wy = (((rtH-1-y) + (xorshift(seed)&1023)/1024.0f)/(float)rtH - 0.5f)*3.0f;
-                        ro = { wx, wy, -1.0f }; rd = {0,0,1};
-                    } else {
-                        float px = (2*rx -1)*tanF * (float)rtW/(float)rtH;
-                        float py = (1-2*ry)*tanF;
-                        rd = norm(Vec3{px,py,1}); ro = camPos;
-                    }
-                    Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
-                    for (; bounce<config.maxBounces; ++bounce) {
-                        Hit best; best.t=1e30f; bool hit=false; Hit tmp;
-                        if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                        if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                        if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                        for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
-                        if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                        if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                        if (useHoriz) {
-                            if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                            if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                        }
-                        if (useObs) {
-                            for (auto &bx : obsBoxes) if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; }
-                        }
-                        if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
-                        if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
-                        if (best.mat==0) {
-                            Vec3 n=best.n; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f};
-                            // Direct lighting gathered separately. throughput currently encodes diffuse albedo and prior path probability.
-                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
-                            col = col + throughput * direct;
-                        }
-                        else if (best.mat==2) {
-                            Vec3 paddleColor{0.25f,0.32f,0.6f};
-                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f);
-                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * paddleColor;
-                            col = col + throughput * direct;
-                        }
-                        if (best.mat!=1 && best.mat!=0 && best.mat!=2) {}
-                        if (best.mat==0 || best.mat==2) {
-                            if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
-                                // Russian roulette: preserve unbiasedness by scaling throughput by 1/p when surviving
-                                float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z)));
-                                float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; }
-                        }
-                    }
-                    if(!terminated){ Vec3 amb{0.05f,0.055f,0.06f}; col = col + throughput * amb; }
-                    totalBounces += bounce; pathsTraced++;
-                }
-                col = col / (float)spp;
-                hdr[(y*rtW + x)*3 + 0] = col.x; hdr[(y*rtW + x)*3 + 1] = col.y; hdr[(y*rtW + x)*3 + 2] = col.z;
+        } else { int total = config.raysPerFrame; spp = std::max(1, total / std::max(1,pixels)); }
+
+        // Determine thread count (let OS decide; no artificial cap). We still avoid spawning more threads than rows.
+        auto detectThreads = [&]()->unsigned {
+#ifdef _WIN32
+            // Prefer GetActiveProcessorCount for better accuracy on systems with heterogeneous cores
+            DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+            if (count == 0) {
+                SYSTEM_INFO si; GetSystemInfo(&si); count = si.dwNumberOfProcessors; }
+            if (count == 0) count = 1;
+            static std::atomic<bool> logged{false};
+            if (!logged.exchange(true)) {
+                char msg[160];
+                _snprintf_s(msg,_TRUNCATE,"[SoftRenderer] HW logical processors detected=%lu\n", (unsigned long)count);
+                OutputDebugStringA(msg); printf("%s", msg);
             }
+            return (unsigned)count;
+#else
+            unsigned hc = std::thread::hardware_concurrency(); return hc?hc:1u;
+#endif
+        };
+    unsigned wantMax = detectThreads();
+    // Optional oversubscription factor (experimentation). PONG_PT_OVERSUB=2..4 multiplies max logical; 1 or missing = no oversub.
+    {
+#ifdef _WIN32
+        char* val=nullptr; size_t len=0; if (_dupenv_s(&val,&len,"PONG_PT_OVERSUB") == 0 && val){
+            try { int f = std::stoi(val); if (f>1 && f<5) { unsigned long long m = (unsigned long long)wantMax * (unsigned long long)f; if (m>UINT_MAX) m=UINT_MAX; wantMax = (unsigned)m; } } catch(...){}
+            free(val);
         }
-        stats_.avgBounceDepth = (pathsTraced>0)? (float)(totalBounces / pathsTraced) : 0.0f;
-        auto tTraceEnd = clock::now(); stats_.spp = spp; stats_.totalRays = spp * rtW * rtH; stats_.msTrace = std::chrono::duration<float, std::milli>(tTraceEnd - t0).count(); t0 = tTraceEnd;
-        temporalAccumulate(hdr); auto tTempEnd = clock::now(); stats_.msTemporal = std::chrono::duration<float, std::milli>(tTempEnd - t0).count(); t0 = tTempEnd;
-        spatialDenoise(); auto tDenoiseEnd = clock::now(); stats_.msDenoise = std::chrono::duration<float, std::milli>(tDenoiseEnd - t0).count(); t0 = tDenoiseEnd;
+#else
+        if (const char* os = std::getenv("PONG_PT_OVERSUB")) { try { int f = std::stoi(os); if (f>1 && f<5) { unsigned long long m=(unsigned long long)wantMax*f; if (m>UINT_MAX) m=UINT_MAX; wantMax=(unsigned)m; } } catch(...){} }
+#endif
+    }
+    bool envOverride = false;
+    unsigned want = wantMax; // may be adapted below (no row cap)
+        // Environment override PONG_PT_THREADS: accepts 'auto' or integer N; N<=0 => auto
+        {
+#ifdef _WIN32
+            char* val = nullptr; size_t len=0; if (_dupenv_s(&val,&len,"PONG_PT_THREADS") == 0 && val){
+                std::string s(val); std::string slow = s; std::transform(slow.begin(), slow.end(), slow.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+                if (slow != "auto") { try { int v = std::stoi(slow); if (v>0) { want = (unsigned)v; envOverride=true; } } catch(...){} }
+                free(val);
+            }
+#else
+            if (const char* env = std::getenv("PONG_PT_THREADS")) { std::string s(env); std::string slow=s; std::transform(slow.begin(), slow.end(), slow.begin(), [](unsigned char c){ return (char)std::tolower(c); }); if (slow != "auto") { try { int v = std::stoi(slow); if (v>0) { want=(unsigned)v; envOverride=true; } } catch(...){} } }
+#endif
+        }
+        if (wantMax == 0) wantMax = 1;
+        if (!envOverride) {
+            // One-time init
+            if (!g_srInitialized.load(std::memory_order_acquire)) {
+                unsigned start = std::max(1u, std::thread::hardware_concurrency()/2);
+                if (start > wantMax) start = wantMax;
+                g_srAdaptiveThreads.store(start, std::memory_order_relaxed);
+                g_srInitialized.store(true, std::memory_order_release);
+                g_srCooldown.store(10, std::memory_order_relaxed); // short initial cooldown
+            }
+            // Use EMA to smooth decisions
+            float lastRaw = g_srLastFrameMs.load(std::memory_order_relaxed);
+            float emaPrev = g_srEmaFrameMs.load(std::memory_order_relaxed);
+            float ema = emaPrev * 0.85f + lastRaw * 0.15f; // smoothing factor
+            g_srEmaFrameMs.store(ema, std::memory_order_relaxed);
+
+            unsigned cur = g_srAdaptiveThreads.load(std::memory_order_relaxed);
+            int cooldown = g_srCooldown.load(std::memory_order_relaxed);
+
+            // Thresholds with hysteresis
+            const float target = 16.6f;
+            const float highThreshold = target * 1.05f;   // ~17.4ms increase threshold
+            const float lowThreshold  = target * 0.70f;   // ~11.6ms decrease threshold
+
+            unsigned next = cur;
+            if (ema > highThreshold && cur < wantMax) {
+                // Scale up moderately (not straight to max) to prevent overshoot; at least +1, at most +25% of remaining headroom
+                unsigned head = wantMax - cur;
+                unsigned step = std::max(1u, std::max(head/4, 1u));
+                next = cur + step; if (next > wantMax) next = wantMax;
+                // Reset cooldown so we don't immediately scale back down
+                g_srCooldown.store(30, std::memory_order_relaxed); // ~0.5s at 60fps
+            } else if (ema > (highThreshold*1.15f) && cur == wantMax) {
+                // We're already at max logical threads and still way over budget; if oversubscription enabled (>logical) keep as-is
+                // (No action now; placeholder for potential auto-increase if we later add dynamic oversub) 
+            } else if (ema < lowThreshold && cur > 1 && cooldown <= 0) {
+                // Only scale down after cooldown to avoid rapid oscillation
+                next = cur - 1;
+                g_srCooldown.store(15, std::memory_order_relaxed); // shorter cooldown after a downscale
+            } else {
+                if (cooldown > 0) g_srCooldown.store(cooldown-1, std::memory_order_relaxed);
+            }
+            if (next < 1) next = 1; if (next > wantMax) next = wantMax;
+            g_srAdaptiveThreads.store(next, std::memory_order_relaxed);
+            want = next;
+        }
+        if (want == 0) want = 1;
+        stats_.threadsUsed = (int)want;
+        unsigned lastLogged = g_srLastLogged.load(std::memory_order_relaxed);
+        if ((unsigned)stats_.threadsUsed != lastLogged) {
+#ifdef _WIN32
+            char msg[196];
+            _snprintf_s(msg, _TRUNCATE, "[SoftRenderer] Threads=%u (max=%u, override=%s, last=%.2fms ema=%.2fms cd=%d)\n", (unsigned)stats_.threadsUsed, wantMax, envOverride?"yes":"no", g_srLastFrameMs.load(), g_srEmaFrameMs.load(), g_srCooldown.load());
+            OutputDebugStringA(msg); printf("%s", msg);
+#else
+            printf("[SoftRenderer] Threads=%u (max=%u, override=%s, last=%.2fms ema=%.2fms cd=%d)\n", (unsigned)stats_.threadsUsed, wantMax, envOverride?"yes":"no": "no", g_srLastFrameMs.load(), g_srEmaFrameMs.load(), g_srCooldown.load());
+#endif
+            g_srLastLogged.store((unsigned)stats_.threadsUsed, std::memory_order_relaxed);
+        }
+
+    std::atomic<long long> totalBounces{0};
+        std::atomic<int> pathsTraced{0};
+        std::atomic<int> earlyExitAccum{0};
+        std::atomic<int> rouletteAccum{0};
+
+        auto worker = [&](int yStart, int yEnd){
+            for (int y=yStart; y<yEnd; ++y) {
+                for (int x=0; x<rtW; ++x) {
+                    Vec3 col{0,0,0}; uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
+                    for (int s=0; s<spp; ++s) {
+                        float u1,u2; rng2(seed,u1,u2);
+                        float rx = (x + u1)*invRTW;
+                        float ry = (y + u2)*invRTH;
+                        Vec3 rd; Vec3 ro;
+                        if (config.useOrtho) {
+                            float jx,jy; rng2(seed,jx,jy);
+                            float wx = ((x + jx)*invRTW - 0.5f)*4.0f;
+                            float wy = (((rtH-1-y) + jy)*invRTH - 0.5f)*3.0f;
+                            ro = { wx, wy, -1.0f }; rd = {0,0,1};
+                        } else {
+                            float px = (2*rx -1)*tanF * aspect;
+                            float py = (1-2*ry)*tanF;
+                            rd = norm(Vec3{px,py,1}); ro = camPos;
+                        }
+                        Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
+                        for (; bounce<config.maxBounces; ++bounce) {
+                            Hit best; best.t=1e30f; bool hit=false; Hit tmp;
+                            if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                            if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                            if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                            for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
+                            if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            if (useHoriz) {
+                                if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                                if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            }
+                            if (useObs) { for (auto &bx : obsBoxes) if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; } }
+                            if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
+                            if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
+                            if (best.mat==0) {
+                                Vec3 n=best.n; float uA,uB; rng2(seed,uA,uB); float r1=2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f}; Vec3 direct = sampleDirect(best.pos, n, rd, seed, false); col = col + throughput * direct; }
+                            else if (best.mat==2) {
+                                Vec3 paddleColor{0.25f,0.32f,0.6f}; Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float uA,uB; rng2(seed,uA,uB); float r1=2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f); Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * paddleColor; col = col + throughput * direct; }
+                            if (best.mat==0 || best.mat==2) { float maxT = std::max(throughput.x, std::max(throughput.y, throughput.z)); if (maxT < 1e-3f) { earlyExitAccum++; bounce++; break; } if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p = std::max(config.rouletteMinProb, std::min(maxT, 0.95f)); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ rouletteAccum++; bounce++; break; } throughput = throughput / p; } }
+                        }
+                        if(!terminated){ Vec3 amb{0.05f,0.055f,0.06f}; col = col + throughput * amb; }
+                        totalBounces.fetch_add(bounce, std::memory_order_relaxed); pathsTraced++;
+                    }
+                    col = col / (float)spp;
+                    size_t idx = (size_t)(y*rtW + x)*3; hdr[idx+0]=col.x; hdr[idx+1]=col.y; hdr[idx+2]=col.z;
+                }
+            }
+        };
+
+        auto tTraceStart = clock::now();
+        if (want == 1) {
+            worker(0, rtH);
+        } else if ((unsigned)rtH >= want) {
+            // Enough rows for at least one per thread
+            std::vector<std::thread> threads; threads.reserve(want-1);
+            int rowsPer = (rtH + (int)want -1)/(int)want;
+            int y0=0; for (unsigned ti=0; ti<want-1; ++ti){ int y1 = std::min(rtH, y0+rowsPer); threads.emplace_back(worker,y0,y1); y0=y1; }
+            if (y0 < rtH) worker(y0, rtH);
+            for (auto &th: threads) th.join();
+        } else {
+            // More threads than rows: row-stride dynamic distribution
+            std::atomic<int> nextRow{0};
+            auto strideThread = [&](){
+                int y;
+                while ((y = nextRow.fetch_add(1, std::memory_order_relaxed)) < rtH) {
+                    worker(y, y+1);
+                }
+            };
+            std::vector<std::thread> threads; threads.reserve(want-1);
+            for (unsigned i=0; i<want-1; ++i) threads.emplace_back(strideThread);
+            strideThread();
+            for (auto &th: threads) th.join();
+        }
+        auto tTraceEnd = clock::now();
+        stats_.msTrace = std::chrono::duration<float,std::milli>(tTraceEnd - t0).count(); t0 = tTraceEnd;
+        stats_.spp = spp; stats_.totalRays = spp * rtW * rtH;
+    int pt = pathsTraced.load(); long long tb = totalBounces.load();
+    stats_.avgBounceDepth = (pt>0)? (float)tb / (float)pt : 0.0f;
+        stats_.earlyExitCount = earlyExitAccum.load();
+        stats_.rouletteTerminations = rouletteAccum.load();
+        temporalAccumulate(hdr); auto tTempEnd = clock::now(); stats_.msTemporal = std::chrono::duration<float,std::milli>(tTempEnd - t0).count(); t0 = tTempEnd;
+        bool skipDenoise = (spp >= 4) && config.denoiseStrength > 0.0f; if (skipDenoise) { stats_.denoiseSkipped = true; } else { spatialDenoise(); auto tDenoiseEnd = clock::now(); stats_.msDenoise = std::chrono::duration<float,std::milli>(tDenoiseEnd - t0).count(); t0 = tDenoiseEnd; }
     }
     // If we were in normal mode, hdr/accum already processed; fanout mode set accum directly.
 
     // Upscale (nearest) + tone map to outW/outH pixel32
     for (int y=0; y<outH; ++y) {
         int sy = std::min(rtH-1, (int)((float)y/outH * rtH));
+        int syBase = sy*rtW*3;
         for (int x=0; x<outW; ++x) {
             int sx = std::min(rtW-1, (int)((float)x/outW * rtW));
-            float r = accum[(sy*rtW+sx)*3+0];
-            float g = accum[(sy*rtW+sx)*3+1];
-            float b = accum[(sy*rtW+sx)*3+2];
+            size_t si = (size_t)syBase + (size_t)sx*3;
+            float r = accum[si+0];
+            float g = accum[si+1];
+            float b = accum[si+2];
             // ACES tone mapping (borrowed from removed segment tracer branch)
             auto ACESFilm = [](float R, float G, float B){
                 auto f=[&](float x){ float a=2.51f,b=0.03f,c=2.43f,d=0.59f,e=0.14f; float num = x*(a*x + b); float den = x*(c*x + d) + e; float o = (den!=0.0f)? num/den : 0.0f; if(o<0)o=0; if(o>1)o=1; return o; };
@@ -604,6 +761,8 @@ void SoftRenderer::render(const GameState &gs) {
     auto tUpscaleEnd = clock::now();
     stats_.msUpscale = std::chrono::duration<float, std::milli>(tUpscaleEnd - t0).count();
     stats_.msTotal = std::chrono::duration<float, std::milli>(tUpscaleEnd - tStart).count();
+    // Feed adaptive controller for next frame
+    g_srLastFrameMs.store(stats_.msTotal, std::memory_order_relaxed);
 }
 
 void SoftRenderer::toneMapAndPack() {
@@ -623,25 +782,35 @@ void SoftRenderer::temporalAccumulate(const std::vector<float>& cur) {
 void SoftRenderer::spatialDenoise() {
     // 3x3 box filter (single pass) on accum into history, then swap back
     if (rtW<4 || rtH<4) return;
-    history.resize(rtW*rtH*3);
-    auto idx = [&](int x,int y){ return (y*rtW + x)*3; };
-    for (int y=0;y<rtH;y++) {
-        for (int x=0;x<rtW;x++) {
-            float sum[3]={0,0,0}; int cnt=0;
-            for (int dy=-1;dy<=1;dy++) {
-                int yy = y+dy; if (yy<0||yy>=rtH) continue;
-                for (int dx=-1;dx<=1;dx++) {
-                    int xx = x+dx; if (xx<0||xx>=rtW) continue;
-                    size_t id = idx(xx,yy);
-                    sum[0]+=accum[id+0]; sum[1]+=accum[id+1]; sum[2]+=accum[id+2]; cnt++;
-                }
-            }
-            size_t o = idx(x,y);
-            float avg0=sum[0]/cnt, avg1=sum[1]/cnt, avg2=sum[2]/cnt;
-            float f = config.denoiseStrength;
-            history[o+0]=accum[o+0]*(1.0f-f)+avg0*f;
-            history[o+1]=accum[o+1]*(1.0f-f)+avg1*f;
-            history[o+2]=accum[o+2]*(1.0f-f)+avg2*f;
+    float f = config.denoiseStrength;
+    if (f <= 0.0001f) return; // skip work if disabled / negligible
+    size_t needed = (size_t)rtW*rtH*3;
+    if (history.size() != needed) history.resize(needed);
+    const int w = rtW;
+    const int h = rtH;
+    for (int y=0; y<h; ++y) {
+        int y0 = (y>0)? y-1 : y;
+        int y1 = y;
+        int y2 = (y<h-1)? y+1 : y;
+        for (int x=0; x<w; ++x) {
+            int x0 = (x>0)? x-1 : x;
+            int x1 = x;
+            int x2 = (x<w-1)? x+1 : x;
+            // Accumulate 3x3 neighborhood (with edge replication) – unrolled
+            size_t idxs[9] = {
+                (size_t)(y0*w + x0)*3, (size_t)(y0*w + x1)*3, (size_t)(y0*w + x2)*3,
+                (size_t)(y1*w + x0)*3, (size_t)(y1*w + x1)*3, (size_t)(y1*w + x2)*3,
+                (size_t)(y2*w + x0)*3, (size_t)(y2*w + x1)*3, (size_t)(y2*w + x2)*3
+            };
+            float sum0=0,sum1=0,sum2=0;
+            for(int k=0;k<9;k++){ sum0+=accum[idxs[k]+0]; sum1+=accum[idxs[k]+1]; sum2+=accum[idxs[k]+2]; }
+            float avg0 = sum0 / 9.0f;
+            float avg1 = sum1 / 9.0f;
+            float avg2 = sum2 / 9.0f;
+            size_t o = (size_t)(y*w + x)*3;
+            history[o+0] = accum[o+0]*(1.0f-f) + avg0*f;
+            history[o+1] = accum[o+1]*(1.0f-f) + avg1*f;
+            history[o+2] = accum[o+2]*(1.0f-f) + avg2*f;
         }
     }
     accum.swap(history);
