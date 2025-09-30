@@ -71,7 +71,8 @@ if (WIN32)
     target_include_directories(pong_win PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
-    target_link_libraries(pong_win PRIVATE user32 gdi32)
+    # Phase 5: Add D3D12 libraries for GPU acceleration
+    target_link_libraries(pong_win PRIVATE user32 gdi32 d3d12 dxgi d3dcompiler)
     set_target_properties(pong_win PROPERTIES WIN32_EXECUTABLE YES)
     
     # Phase 1 Performance Optimizations for path tracer

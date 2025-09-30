@@ -283,7 +283,8 @@ int run_win_pong(HINSTANCE inst, int show) {
             bool showHud = settings.hud_show_play!=0; // default for gameplay
             if(rec.active && settings.hud_show_record==0) showHud = false; // hide entirely while recording if user chose so
             if(showHud) {
-                hud.draw(gs, renderer==R_PATH?ptAdapter.stats():nullptr, st.memDC, winW, winH, dpi, highScore);
+                bool isGPU = (renderer == R_PATH) && ptAdapter.isUsingGPU();
+                hud.draw(gs, renderer==R_PATH?ptAdapter.stats():nullptr, st.memDC, winW, winH, dpi, highScore, isGPU);
             }
             if(rec.active){
                 // Recording info panel to the right of standard HUD (HUD width ~280px)

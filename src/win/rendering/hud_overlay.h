@@ -41,6 +41,7 @@ public:
      * @param h Height of the drawing area in pixels  
      * @param dpi Current DPI setting for scaling calculations
      * @param highScore Current high score to display
+     * @param isGPU True if using GPU acceleration, false for CPU rendering
      */
-    void draw(const GameState& gs, const SRStats* stats, HDC dc, int w, int h, int dpi, int highScore);
+    void draw(const GameState& gs, const SRStats* stats, HDC dc, int w, int h, int dpi, int highScore, bool isGPU = false);
 };
