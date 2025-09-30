@@ -32,9 +32,6 @@
 #include <cmath>
 #include "../core/game_core.h"
 
-// Small math struct (kept minimal; operators defined inline below where needed)
-struct Vec3 { float x,y,z; };
-
 struct SRConfig {
     // Runtime toggles
     bool enablePathTracing = true;        // Master switch so caller can keep struct and just disable
@@ -70,14 +67,6 @@ struct SRConfig {
     int   softShadowSamples = 4;            // Number of importance samples per light for soft shadows (1=hard shadow)
     float lightRadiusScale = 1.0f;          // Multiplier on physical ball radius when treated as area light
     bool  pbrEnable = true;                 // Enable physically based energy terms (Lambert 1/pi, simple Fresnel, energy conservation)
-
-    // Adaptive sampling & temporal reprojection controls
-    bool  adaptiveSamplingEnable = true;    // Enable per-pixel variance guided early termination
-    int   adaptiveMinSamples = 2;           // Minimum spp before evaluating variance
-    float adaptiveVarianceThreshold = 0.003f; // Relative luminance variance threshold
-    bool  reprojectionEnable = true;        // Use first-hit normal/albedo to decide if temporal history is valid
-    float reprojectionNormalDotThreshold = 0.9f; // If dot(n_prev,n_cur) < this -> reset history for pixel
-    float reprojectionAlbedoThreshold = 0.15f;   // If |albedo_prev - albedo_cur| length > this -> reset
 };
 
 // Runtime statistics for profiling / HUD overlay
@@ -100,9 +89,6 @@ struct SRStats {
     int rouletteTerminations = 0;    // number of paths killed by Russian roulette
     bool denoiseSkipped = false;     // true when denoise pass skipped due to quality heuristic
     int threadsUsed = 1;             // number of threads used in last render (includes main)
-    int adaptiveShortCircuits = 0;    // number of pixels that terminated early due to variance test
-    float msBVH = 0.0f;               // BVH build time (ms)
-    int   bvhNodeCount = 0;           // number of BVH nodes built this frame
 };
 
 class SoftRenderer {
@@ -122,41 +108,18 @@ public:
     const BITMAPINFO &getBitmapInfo() const { return bmpInfo; }
     const uint32_t *pixels() const { return reinterpret_cast<const uint32_t*>(pixel32.data()); }
 
-public:
+private:
     int outW = 0, outH = 0;      // window size
     int rtW = 0, rtH = 0;        // internal render resolution
     SRConfig config{};
     BITMAPINFO bmpInfo{};        // top‑down 32bpp DIB header
     std::vector<float> accum;    // accumulation buffer (RGB float per internal pixel)
     std::vector<float> history;  // previous frame (for temporal blending)
-    std::vector<float> firstHitNormal; // xyz per pixel (current frame)
-    std::vector<float> firstHitAlbedo; // xyz per pixel (current frame)
-    std::vector<float> prevFirstHitNormal; // xyz per pixel (previous frame)
-    std::vector<float> prevFirstHitAlbedo; // xyz per pixel (previous frame)
-    std::vector<float> varianceAccum;  // per-pixel running mean*mean & mean (packed) or simple Welford scratch (store sum, sumSq)
     bool haveHistory = false;
     std::vector<uint32_t> pixel32; // packed BGRA for GDI (A unused)
     unsigned frameCounter = 0;
     SRStats stats_{};              // last frame statistics
 
-    // BVH persistent data
-public: // (temporarily public to allow local helper in cpp; could be refactored later)
-    struct BVHNode { float bmin[3]; float bmax[3]; int left; int right; int primStart; int primCount; };
-    struct BVHPrim { float bmin[3]; float bmax[3]; int id; int mat; };
-private:
-    std::vector<BVHNode> bvhNodes;            // persistent nodes
-    std::vector<BVHPrim> bvhPrims;            // persistent primitives (current frame)
-    bool bvhBuilt = false;                    // flag indicating initial build done
-    size_t prevPrimSignature = 0;             // hash-like signature of primitive count/layout to trigger rebuild
-
-    void buildOrRefitBVH(const GameState& gs, const std::vector<Vec3>& ballCenters, const std::vector<float>& ballRs,
-                          Vec3 leftCenter, Vec3 rightCenter, Vec3 topCenter, Vec3 bottomCenter,
-                          float paddleHalfX, float paddleHalfY, float paddleThickness,
-                          float horizHalfX, float horizHalfY, float horizThickness,
-                          bool useHoriz, const std::vector<std::pair<Vec3,Vec3>>& obsBoxes, bool useObs);
-    void refitBVHNode(int idx);
-
-private:
     void updateInternalResolution();
     void toneMapAndPack();
     void temporalAccumulate(const std::vector<float>& cur);

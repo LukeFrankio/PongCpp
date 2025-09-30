@@ -34,9 +34,6 @@ void HudOverlay::draw(const GameState& gs, const SRStats* stats, HDC dc, int w, 
 		// Extra diagnostics: internal resolution & first pixel sample (posted after tone map in adapter)
 		// We can't read pixel data here directly; adapter will overlay if zero. So just show internal dims.
 		swprintf(buf,256,L"Internal %dx%d", stats->internalW, stats->internalH); drawText(dc, buf, xPad, yPad + lineH*line++);
-		// Threading / adaptation diagnostics (ema frame time & threads)
-		// NOTE: We reuse msTotal for last frame; EMA maintained in soft_renderer.cpp (not exposed - show msTotal for now)
-		swprintf(buf,256,L"Threads %d", stats->threadsUsed); drawText(dc, buf, xPad, yPad + lineH*line++);
 		if(stats->projectedRays>0){
 			swprintf(buf,256,L"FanOut proj %lld exec %d%s", (long long)stats->projectedRays, stats->totalRays, stats->fanoutAborted?L" (ABORT)":L"");
 			drawText(dc, buf, xPad, yPad + lineH*line++);

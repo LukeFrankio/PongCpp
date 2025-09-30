@@ -13,9 +13,6 @@
 #include <atomic>
 #include <mutex>
 #include <cctype>
-#include <condition_variable>
-#include <functional>
-#include <array>
 
 // Adaptive threading state (global to translation unit)
 static std::atomic<float> g_srLastFrameMs{ 1000.0f };      // raw last frame
@@ -24,83 +21,6 @@ static std::atomic<unsigned> g_srAdaptiveThreads{ 0 };     // current chosen thr
 static std::atomic<unsigned> g_srLastLogged{ 0 };          // last logged value
 static std::atomic<bool> g_srInitialized{ false };
 static std::atomic<int>  g_srCooldown{ 0 };                // frames to wait before another downward adjustment
-
-// Simple persistent thread pool for row/tile dispatch
-struct SRThreadPool {
-    std::vector<std::thread> threads;
-    std::mutex m;
-    std::condition_variable cvWork;
-    std::condition_variable cvDone;
-    bool stop = false;
-    bool haveWork = false;
-    int activeWorkers = 0;          // workers participating in this frame
-    std::atomic<int> nextRow{0};
-    int totalRows = 0;
-    std::function<void(int)> rowFunc; // processes a single row
-
-    void ensureSize(unsigned want) {
-        if (threads.size() == want) return;
-        // teardown
-        stop = true;
-        cvWork.notify_all();
-        for (auto &t: threads) if (t.joinable()) t.join();
-        threads.clear();
-        stop = false;
-        if (want <= 1) return; // single-thread fallback
-        threads.reserve(want-1); // main thread counts as one
-        for (unsigned i=0;i<want-1;++i) {
-            threads.emplace_back([this]{
-                std::unique_lock<std::mutex> lk(m);
-                while (true) {
-                    cvWork.wait(lk, [&]{ return stop || haveWork; });
-                    if (stop) break;
-                    lk.unlock();
-                    // work loop
-                    while (true) {
-                        int y = nextRow.fetch_add(1, std::memory_order_relaxed);
-                        if (y >= totalRows) break;
-                        rowFunc(y);
-                    }
-                    lk.lock();
-                    if (--activeWorkers == 0) { haveWork = false; cvDone.notify_one(); }
-                }
-            });
-        }
-    }
-
-    void dispatch(unsigned workers, int rows, const std::function<void(int)> &fn) {
-        ensureSize(workers);
-        if (workers <= 1) { // run inline
-            for (int y=0;y<rows;++y) fn(y);
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lk(m);
-            rowFunc = fn;
-            totalRows = rows;
-            nextRow.store(0, std::memory_order_relaxed);
-            activeWorkers = (int)workers - 1; // excluding main thread which will also run
-            haveWork = true;
-        }
-        cvWork.notify_all();
-        // Main thread participates
-        while (true) {
-            int y = nextRow.fetch_add(1, std::memory_order_relaxed);
-            if (y >= rows) break;
-            fn(y);
-        }
-        // Wait for workers
-        std::unique_lock<std::mutex> lk(m);
-        cvDone.wait(lk, [&]{ return !haveWork; });
-    }
-
-    ~SRThreadPool(){
-        stop = true; haveWork = true; cvWork.notify_all();
-        for(auto &t: threads) if(t.joinable()) t.join();
-    }
-};
-
-static SRThreadPool g_srPool; // global pool instance
 
 
 // Simple XOR shift RNG for deterministic sampling
@@ -115,7 +35,7 @@ static inline void rng2(uint32_t &seed, float &u, float &v){
     v = (r >> 16)    * (1.0f/65536.0f);
 }
 
-// Vec3 defined in header
+struct Vec3 { float x,y,z; };
 static inline Vec3 operator+(Vec3 a, Vec3 b){ return {a.x+b.x,a.y+b.y,a.z+b.z}; }
 static inline Vec3 operator-(Vec3 a, Vec3 b){ return {a.x-b.x,a.y-b.y,a.z-b.z}; }
 static inline Vec3 operator*(Vec3 a, float s){ return {a.x*s,a.y*s,a.z*s}; }
@@ -127,92 +47,6 @@ static inline Vec3 norm(Vec3 a){ float l=std::sqrt(dot(a,a)); return (l>1e-8f)?V
 static inline Vec3 cross(Vec3 a, Vec3 b){ return { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x }; }
 
 // Scene description (very small & hard coded)
-// -------------------- BVH Utilities (persistent) --------------------
-struct AABB { Vec3 bmin; Vec3 bmax; };
-static inline AABB merge(const AABB&a,const AABB&b){ return { { std::min(a.bmin.x,b.bmin.x), std::min(a.bmin.y,b.bmin.y), std::min(a.bmin.z,b.bmin.z) }, { std::max(a.bmax.x,b.bmax.x), std::max(a.bmax.y,b.bmax.y), std::max(a.bmax.z,b.bmax.z) } }; }
-static inline Vec3 center(const AABB&a){ return {(a.bmin.x+a.bmax.x)*0.5f,(a.bmin.y+a.bmax.y)*0.5f,(a.bmin.z+a.bmax.z)*0.5f}; }
-static inline bool intersectAABB(Vec3 ro, Vec3 rd, const AABB& box, float &tMax){
-    float tmin=0.0f, tmax=tMax;
-    for(int i=0;i<3;i++){
-        float o = (i==0)?ro.x: (i==1)?ro.y: ro.z;
-        float d = (i==0)?rd.x: (i==1)?rd.y: rd.z;
-        float mn = (i==0)?box.bmin.x: (i==1)?box.bmin.y: box.bmin.z;
-        float mx = (i==0)?box.bmax.x: (i==1)?box.bmax.y: box.bmax.z;
-        if (std::fabs(d) < 1e-8f) { if (o < mn || o > mx) return false; }
-        else {
-            float inv = 1.0f/d; float t1 = (mn - o)*inv; float t2 = (mx - o)*inv; if (t1>t2) std::swap(t1,t2); tmin = t1>tmin? t1:tmin; tmax = t2<tmax? t2:tmax; if (tmin>tmax) return false; }
-    }
-    tMax = tmax; return true;
-}
-// Member functions to build / refit persistent BVH
-void SoftRenderer::refitBVHNode(int idx){
-    if (idx < 0 || idx >= (int)bvhNodes.size()) return;
-    BVHNode &n = bvhNodes[idx];
-    if (n.primCount>0){
-        for(int k=0;k<3;k++){ n.bmin[k]=1e30f; n.bmax[k]=-1e30f; }
-        for(int i=0;i<n.primCount;i++){
-            const BVHPrim &p = bvhPrims[n.primStart+i];
-            for(int k=0;k<3;k++){ n.bmin[k]=std::min(n.bmin[k],p.bmin[k]); n.bmax[k]=std::max(n.bmax[k],p.bmax[k]); }
-        }
-        return;
-    }
-    if (n.left!=-1) refitBVHNode(n.left);
-    if (n.right!=-1) refitBVHNode(n.right);
-    for(int k=0;k<3;k++){
-        float mn = 1e30f, mx = -1e30f;
-        if (n.left!=-1){ mn = std::min(mn, bvhNodes[n.left].bmin[k]); mx = std::max(mx, bvhNodes[n.left].bmax[k]); }
-        if (n.right!=-1){ mn = std::min(mn, bvhNodes[n.right].bmin[k]); mx = std::max(mx, bvhNodes[n.right].bmax[k]); }
-        n.bmin[k]=mn; n.bmax[k]=mx;
-    }
-}
-
-namespace { // anonymous to limit scope
-static void buildBVHRecursive(std::vector<SoftRenderer::BVHNode>& nodes, std::vector<SoftRenderer::BVHPrim>& prims, int start, int count){
-    SoftRenderer::BVHNode node{}; for(int k=0;k<3;k++){ node.bmin[k]=prims[start].bmin[k]; node.bmax[k]=prims[start].bmax[k]; }
-    for(int i=1;i<count;i++) for(int k=0;k<3;k++){ node.bmin[k]=std::min(node.bmin[k],prims[start+i].bmin[k]); node.bmax[k]=std::max(node.bmax[k],prims[start+i].bmax[k]); }
-    if (count <= 2){ node.primStart=start; node.primCount=count; node.left=node.right=-1; nodes.push_back(node); return; }
-    float ex=node.bmax[0]-node.bmin[0], ey=node.bmax[1]-node.bmin[1], ez=node.bmax[2]-node.bmin[2]; int axis=(ex>ey&&ex>ez)?0:(ey>ez?1:2);
-    int mid=start+count/2;
-    std::nth_element(prims.begin()+start, prims.begin()+mid, prims.begin()+start+count, [&](const SoftRenderer::BVHPrim&a,const SoftRenderer::BVHPrim&b){ return (a.bmin[axis]+a.bmax[axis]) < (b.bmin[axis]+b.bmax[axis]); });
-    int idx=(int)nodes.size(); nodes.push_back(node); int leftIdx=(int)nodes.size(); buildBVHRecursive(nodes,prims,start,mid-start); int rightIdx=(int)nodes.size(); buildBVHRecursive(nodes,prims,mid,count-(mid-start)); nodes[idx].left=leftIdx; nodes[idx].right=rightIdx; }
-} // namespace
-
-void SoftRenderer::buildOrRefitBVH(const GameState& gs, const std::vector<Vec3>& ballCenters, const std::vector<float>& ballRs,
-                          Vec3 leftCenter, Vec3 rightCenter, Vec3 topCenter, Vec3 bottomCenter,
-                          float paddleHalfX, float paddleHalfY, float paddleThickness,
-                          float horizHalfX, float horizHalfY, float horizThickness,
-                          bool useHoriz, const std::vector<std::pair<Vec3,Vec3>>& obsBoxes, bool useObs){
-    // Build primitive list each frame (dynamic positions). Refit nodes afterwards.
-    this->bvhPrims.clear(); this->bvhPrims.reserve(ballCenters.size()+8+obsBoxes.size());
-    auto pushPrim=[&](Vec3 mn, Vec3 mx, int id, int mat){ BVHPrim p; p.id=id; p.mat=mat; p.bmin[0]=mn.x; p.bmin[1]=mn.y; p.bmin[2]=mn.z; p.bmax[0]=mx.x; p.bmax[1]=mx.y; p.bmax[2]=mx.z; this->bvhPrims.push_back(p); };
-    for(size_t i=0;i<ballCenters.size();++i){ Vec3 c=ballCenters[i]; float r=ballRs[i]; pushPrim(c-Vec3{r,r,r}, c+Vec3{r,r,r}, (int)i, 1); }
-    pushPrim(leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 100, 2);
-    pushPrim(rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 101, 2);
-    if (useHoriz){
-        pushPrim(topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, 102, 2);
-        pushPrim(bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, 103, 2);
-    }
-    if (useObs){ for(auto &bx: obsBoxes) pushPrim(bx.first, bx.second, 200, 0); }
-    // Add planes as large thin boxes (ids 1000+)
-    pushPrim(Vec3{-4, 1.55f,-2}, Vec3{4,1.65f,2}, 1000,0); // top plane
-    pushPrim(Vec3{-4,-1.65f,-2}, Vec3{4,-1.55f,2}, 1001,0); // bottom plane
-    pushPrim(Vec3{-4,-2, 1.75f}, Vec3{4,2,1.85f}, 1002,0);  // back plane
-
-    size_t sig = this->bvhPrims.size();
-    auto tStart = std::chrono::high_resolution_clock::now();
-    if (!this->bvhBuilt || sig != this->prevPrimSignature){
-        this->bvhNodes.clear(); this->bvhNodes.reserve(this->bvhPrims.size()*2);
-        std::vector<BVHPrim> temp = this->bvhPrims; // copy for sorting only
-        buildBVHRecursive(this->bvhNodes,temp,0,(int)temp.size());
-        this->bvhBuilt = true; this->prevPrimSignature = sig;
-    } else {
-        // Refit bounds
-        this->refitBVHNode(0);
-    }
-    auto tEnd = std::chrono::high_resolution_clock::now();
-    stats_.bvhNodeCount = (int)this->bvhNodes.size();
-    stats_.msBVH = std::chrono::duration<float,std::milli>(tEnd - tStart).count();
-}
 // Coordinate mapping: Game x in [0,gw] -> world X in [-2,2]
 //                    Game y in [0,gh] -> world Y in [-1.5,1.5]
 // Z axis depth into screen (camera looks +Z). Camera at z=-5, scene near z=0..+1.5
@@ -271,11 +105,6 @@ void SoftRenderer::updateInternalResolution() {
     rtH = std::max(8, int(outH * scale));
     accum.assign(rtW*rtH*3,0.0f);
     history.assign(rtW*rtH*3,0.0f);
-    firstHitNormal.assign(rtW*rtH*3,0.0f);
-    firstHitAlbedo.assign(rtW*rtH*3,0.0f);
-    prevFirstHitNormal.assign(rtW*rtH*3,0.0f);
-    prevFirstHitAlbedo.assign(rtW*rtH*3,0.0f);
-    varianceAccum.assign(rtW*rtH*2,0.0f); // store sum and sumSq for luminance
     haveHistory = false;
 }
 
@@ -819,27 +648,10 @@ void SoftRenderer::render(const GameState &gs) {
         std::atomic<int> earlyExitAccum{0};
         std::atomic<int> rouletteAccum{0};
 
-    // Convert obstacle Box list into pair list for BVH call
-    std::vector<std::pair<Vec3,Vec3>> obsPairs; obsPairs.reserve(obsBoxes.size());
-    for (auto &b: obsBoxes) obsPairs.emplace_back(b.bmin,b.bmax);
-    buildOrRefitBVH(gs, ballCenters, ballRs, leftCenter,rightCenter, topCenter, bottomCenter,
-            paddleHalfX,paddleHalfY,paddleThickness, horizHalfX,horizHalfY,horizThickness, useHoriz, obsPairs, useObs);
-
-        auto traverseBVH = [&](Vec3 ro, Vec3 rd, Hit &best){
-            if (bvhNodes.empty()) return false; bool hitAny=false; struct StackItem{int idx;}; std::array<StackItem,128> stack; int sp=0; float tMax=best.t; stack[sp++]={0};
-            while(sp){ auto it=stack[--sp]; const BVHNode &n = bvhNodes[it.idx]; AABB box{{n.bmin[0],n.bmin[1],n.bmin[2]},{n.bmax[0],n.bmax[1],n.bmax[2]}}; float tBox=tMax; if(!intersectAABB(ro,rd,box,tBox)) continue; if (n.primCount>0){ for(int i=0;i<n.primCount;i++){ const BVHPrim &p = bvhPrims[n.primStart+i];
-                        if (p.id < (int)ballCenters.size()) { Hit tmp; if(intersectSphere(ro,rd, ballCenters[p.id], ballRs[p.id], tMax, tmp, p.id==0?1:1)){ if(tmp.t<best.t){ best=tmp; hitAny=true; tMax=best.t; } } }
-                        else { Vec3 mn{p.bmin[0],p.bmin[1],p.bmin[2]}; Vec3 mx{p.bmax[0],p.bmax[1],p.bmax[2]}; Hit tmp; if(intersectBox(ro,rd,mn,mx,tMax,tmp,p.mat==2?2:0)){ if(tmp.t<best.t){ best=tmp; hitAny=true; tMax=best.t; } } }
-                    } }
-            else { if (n.left!=-1) stack[sp++]={n.left}; if (n.right!=-1) stack[sp++]={n.right}; }
-            }
-            return hitAny; };
-
         auto worker = [&](int yStart, int yEnd){
             for (int y=yStart; y<yEnd; ++y) {
                 for (int x=0; x<rtW; ++x) {
                     Vec3 col{0,0,0}; uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-                    float sumL=0.0f, sumL2=0.0f; // luminance stats for adaptive sampling
                     for (int s=0; s<spp; ++s) {
                         float u1,u2; rng2(seed,u1,u2);
                         float rx = (x + u1)*invRTW;
@@ -856,55 +668,60 @@ void SoftRenderer::render(const GameState &gs) {
                             rd = norm(Vec3{px,py,1}); ro = camPos;
                         }
                         Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
-                        int pixelMaxBounces = config.maxBounces;
-                        if (bounce==0){ float lum0=(throughput.x*0.2126f + throughput.y*0.7152f + throughput.z*0.0722f); if (lum0<0.25f && pixelMaxBounces>3) pixelMaxBounces=3; }
-                        for (; bounce<pixelMaxBounces; ++bounce) {
+                        for (; bounce<config.maxBounces; ++bounce) {
                             Hit best; best.t=1e30f; bool hit=false; Hit tmp;
-                            // Planes still brute force (could add to BVH as big boxes):
                             if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                             if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                             if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                            if (traverseBVH(ro,rd,best)) hit=true;
+                            for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
+                            if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            if (useHoriz) {
+                                if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                                if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            }
+                            if (useObs) { for (auto &bx : obsBoxes) if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; } }
                             if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
                             if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
                             if (best.mat==0) {
-                                if (bounce==0){ // record first hit normal/albedo
-                                    size_t fh = (size_t)(y*rtW + x)*3; firstHitNormal[fh+0]=best.n.x; firstHitNormal[fh+1]=best.n.y; firstHitNormal[fh+2]=best.n.z; firstHitAlbedo[fh+0]=0.62f; firstHitAlbedo[fh+1]=0.64f; firstHitAlbedo[fh+2]=0.67f; }
                                 Vec3 n=best.n; float uA,uB; rng2(seed,uA,uB); float r1=2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f}; Vec3 direct = sampleDirect(best.pos, n, rd, seed, false); col = col + throughput * direct; }
                             else if (best.mat==2) {
-                                if (bounce==0){ size_t fh=(size_t)(y*rtW + x)*3; firstHitNormal[fh+0]=best.n.x; firstHitNormal[fh+1]=best.n.y; firstHitNormal[fh+2]=best.n.z; firstHitAlbedo[fh+0]=0.55f; firstHitAlbedo[fh+1]=0.60f; firstHitAlbedo[fh+2]=0.85f; }
                                 Vec3 paddleColor{0.25f,0.32f,0.6f}; Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float uA,uB; rng2(seed,uA,uB); float r1=2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f); Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * paddleColor; col = col + throughput * direct; }
                             if (best.mat==0 || best.mat==2) { float maxT = std::max(throughput.x, std::max(throughput.y, throughput.z)); if (maxT < 1e-3f) { earlyExitAccum++; bounce++; break; } if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p = std::max(config.rouletteMinProb, std::min(maxT, 0.95f)); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ rouletteAccum++; bounce++; break; } throughput = throughput / p; } }
                         }
                         if(!terminated){ Vec3 amb{0.05f,0.055f,0.06f}; col = col + throughput * amb; }
                         totalBounces.fetch_add(bounce, std::memory_order_relaxed); pathsTraced++;
-                        // Adaptive sampling luminance accumulation
-                        float lum = col.x*0.2126f + col.y*0.7152f + col.z*0.0722f;
-                        sumL += lum; sumL2 += lum*lum;
-                        if (config.adaptiveSamplingEnable && s+1 >= config.adaptiveMinSamples) {
-                            float n = (float)(s+1);
-                            float mean = sumL / n;
-                            float var = (sumL2 / n) - mean*mean;
-                            if (var < config.adaptiveVarianceThreshold * mean * mean) { // relative variance small
-                                stats_.adaptiveShortCircuits++;
-                                break; // early exit sampling loop for this pixel
-                            }
-                        }
                     }
                     col = col / (float)spp;
-                    size_t pindex = (size_t)(y*rtW + x);
-                    size_t idx = pindex*3; hdr[idx+0]=col.x; hdr[idx+1]=col.y; hdr[idx+2]=col.z;
-                    // Capture first-hit data for reprojection (we recorded only final col; approximate using first bounce contributions is omitted for brevity)
-                    // As a proxy, store the last surface normal encountered (best.n from loop) and simple albedo guess based on material
-                    // (In a full implementation we'd separate first intersection shading path.)
-                    // For now leave zero if no surface hit before background.
+                    size_t idx = (size_t)(y*rtW + x)*3; hdr[idx+0]=col.x; hdr[idx+1]=col.y; hdr[idx+2]=col.z;
                 }
             }
         };
 
         auto tTraceStart = clock::now();
-        // Use persistent pool (main thread + pool workers)
-        g_srPool.dispatch((unsigned)want, rtH, [&](int y){ worker(y, y+1); });
+        if (want == 1) {
+            worker(0, rtH);
+        } else if ((unsigned)rtH >= want) {
+            // Enough rows for at least one per thread
+            std::vector<std::thread> threads; threads.reserve(want-1);
+            int rowsPer = (rtH + (int)want -1)/(int)want;
+            int y0=0; for (unsigned ti=0; ti<want-1; ++ti){ int y1 = std::min(rtH, y0+rowsPer); threads.emplace_back(worker,y0,y1); y0=y1; }
+            if (y0 < rtH) worker(y0, rtH);
+            for (auto &th: threads) th.join();
+        } else {
+            // More threads than rows: row-stride dynamic distribution
+            std::atomic<int> nextRow{0};
+            auto strideThread = [&](){
+                int y;
+                while ((y = nextRow.fetch_add(1, std::memory_order_relaxed)) < rtH) {
+                    worker(y, y+1);
+                }
+            };
+            std::vector<std::thread> threads; threads.reserve(want-1);
+            for (unsigned i=0; i<want-1; ++i) threads.emplace_back(strideThread);
+            strideThread();
+            for (auto &th: threads) th.join();
+        }
         auto tTraceEnd = clock::now();
         stats_.msTrace = std::chrono::duration<float,std::milli>(tTraceEnd - t0).count(); t0 = tTraceEnd;
         stats_.spp = spp; stats_.totalRays = spp * rtW * rtH;
@@ -912,35 +729,7 @@ void SoftRenderer::render(const GameState &gs) {
     stats_.avgBounceDepth = (pt>0)? (float)tb / (float)pt : 0.0f;
         stats_.earlyExitCount = earlyExitAccum.load();
         stats_.rouletteTerminations = rouletteAccum.load();
-        // Temporal accumulation with per-pixel gating (approximate placeholder): if history exists and color delta large, blend with higher alpha
-        if (config.reprojectionEnable) {
-            size_t count = hdr.size()/3;
-            if (!haveHistory){ accum = hdr; haveHistory=true; }
-            else {
-                float ndotThresh = config.reprojectionNormalDotThreshold;
-                float albThresh2 = config.reprojectionAlbedoThreshold * config.reprojectionAlbedoThreshold;
-                float a = config.accumAlpha;
-                for(size_t i=0;i<count;i++){
-                    size_t k=i*3;
-                    float npx=prevFirstHitNormal[k+0], npy=prevFirstHitNormal[k+1], npz=prevFirstHitNormal[k+2];
-                    float ncx=firstHitNormal[k+0], ncy=firstHitNormal[k+1], ncz=firstHitNormal[k+2];
-                    float ndot = npx*ncx + npy*ncy + npz*ncz;
-                    float apr=prevFirstHitAlbedo[k+0], apg=prevFirstHitAlbedo[k+1], apb=prevFirstHitAlbedo[k+2];
-                    float acr=firstHitAlbedo[k+0], acg=firstHitAlbedo[k+1], acb=firstHitAlbedo[k+2];
-                    float dR=apr-acr, dG=apg-acg, dB=apb-acb; float albDist2 = dR*dR + dG*dG + dB*dB;
-                    if (ndot < ndotThresh || albDist2 > albThresh2){ // history invalid
-                        accum[k+0]=hdr[k+0]; accum[k+1]=hdr[k+1]; accum[k+2]=hdr[k+2];
-                    } else {
-                        accum[k+0] = accum[k+0]*(1.0f-a) + hdr[k+0]*a;
-                        accum[k+1] = accum[k+1]*(1.0f-a) + hdr[k+1]*a;
-                        accum[k+2] = accum[k+2]*(1.0f-a) + hdr[k+2]*a;
-                    }
-                }
-            }
-            prevFirstHitNormal = firstHitNormal; prevFirstHitAlbedo = firstHitAlbedo;
-        } else {
-            temporalAccumulate(hdr); haveHistory=true; }
-        auto tTempEnd = clock::now(); stats_.msTemporal = std::chrono::duration<float,std::milli>(tTempEnd - t0).count(); t0 = tTempEnd;
+        temporalAccumulate(hdr); auto tTempEnd = clock::now(); stats_.msTemporal = std::chrono::duration<float,std::milli>(tTempEnd - t0).count(); t0 = tTempEnd;
         bool skipDenoise = (spp >= 4) && config.denoiseStrength > 0.0f; if (skipDenoise) { stats_.denoiseSkipped = true; } else { spatialDenoise(); auto tDenoiseEnd = clock::now(); stats_.msDenoise = std::chrono::duration<float,std::milli>(tDenoiseEnd - t0).count(); t0 = tDenoiseEnd; }
     }
     // If we were in normal mode, hdr/accum already processed; fanout mode set accum directly.
