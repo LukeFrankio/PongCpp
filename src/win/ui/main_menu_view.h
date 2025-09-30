@@ -40,6 +40,8 @@ struct InputState;            // forward decl (edge-detected input snapshot)
 // High level semantic actions the menu can request
 enum class MenuAction { Play, Settings, Scores, Quit, Back };
 
+// Main menu now has 10 entries (added Recording Mode + Player Mode)
+
 class MainMenuView {
 public:
 	struct Result {

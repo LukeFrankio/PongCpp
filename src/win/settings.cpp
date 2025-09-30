@@ -58,6 +58,26 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("pt_fanout_enable", s.pt_fanout_enable);
     extractInt("pt_fanout_cap", s.pt_fanout_cap);
     extractInt("pt_fanout_abort", s.pt_fanout_abort);
+    // New soft shadow / PBR fields (backward compatible: defaults remain if not present)
+    extractInt("pt_soft_shadow_samples", s.pt_soft_shadow_samples);
+    extractInt("pt_light_radius_pct", s.pt_light_radius_pct);
+    extractInt("pt_pbr_enable", s.pt_pbr_enable);
+    // Recording mode
+    extractInt("recording_mode", s.recording_mode);
+        extractInt("player_mode", s.player_mode);
+        extractInt("recording_fps", s.recording_fps);
+        extractInt("physics_mode", s.physics_mode);
+        extractInt("hud_show_play", s.hud_show_play);
+        extractInt("hud_show_record", s.hud_show_record);
+        if(s.physics_mode<0||s.physics_mode>1) s.physics_mode=1;
+        s.hud_show_play = s.hud_show_play?1:0;
+        s.hud_show_record = s.hud_show_record?1:0;
+        if(s.recording_fps < 15) s.recording_fps = 15; else if(s.recording_fps > 60) s.recording_fps = 60;
+        if(s.player_mode < 0 || s.player_mode > 2) s.player_mode = 0;
+    // Defensive clamp after load
+    if(s.pt_soft_shadow_samples < 1) s.pt_soft_shadow_samples = 1; else if(s.pt_soft_shadow_samples > 64) s.pt_soft_shadow_samples = 64;
+    if(s.pt_light_radius_pct < 10) s.pt_light_radius_pct = 10; else if(s.pt_light_radius_pct > 500) s.pt_light_radius_pct = 500;
+    if(s.pt_pbr_enable!=0) s.pt_pbr_enable = 1;
     return s;
 }
 
@@ -82,10 +102,19 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"pt_use_ortho\": " << s.pt_use_ortho << ",\n";
     ofs << "  \"pt_rr_enable\": " << s.pt_rr_enable << ",\n";
     ofs << "  \"pt_rr_start_bounce\": " << s.pt_rr_start_bounce << ",\n";
-    ofs << "  \"pt_rr_min_prob_pct\": " << s.pt_rr_min_prob_pct << "\n";
+    ofs << "  \"pt_rr_min_prob_pct\": " << s.pt_rr_min_prob_pct << ",\n";
     ofs << "  \"pt_fanout_enable\": " << s.pt_fanout_enable << ",\n";
     ofs << "  \"pt_fanout_cap\": " << s.pt_fanout_cap << ",\n";
-    ofs << "  \"pt_fanout_abort\": " << s.pt_fanout_abort << "\n";
+    ofs << "  \"pt_fanout_abort\": " << s.pt_fanout_abort << ",\n";
+    ofs << "  \"pt_soft_shadow_samples\": " << s.pt_soft_shadow_samples << ",\n";
+    ofs << "  \"pt_light_radius_pct\": " << s.pt_light_radius_pct << ",\n";
+    ofs << "  \"pt_pbr_enable\": " << s.pt_pbr_enable << ",\n";
+    ofs << "  \"recording_mode\": " << s.recording_mode << "\n";
+        ofs << "  \"player_mode\": " << s.player_mode << ",\n";
+        ofs << "  \"recording_fps\": " << s.recording_fps << ",\n";
+        ofs << "  \"physics_mode\": " << s.physics_mode << ",\n";
+        ofs << "  \"hud_show_play\": " << s.hud_show_play << ",\n";
+        ofs << "  \"hud_show_record\": " << s.hud_show_record << "\n";
     ofs << "}\n";
     return true;
 }

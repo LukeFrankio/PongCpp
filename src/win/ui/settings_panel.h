@@ -62,7 +62,7 @@ private:
 
 	// Slider meta
 	struct SliderInfo { const wchar_t* label; int *val; int minv; int maxv; int step; };
-	static constexpr int kBaseSliderCount = 7; // rays/bounces/internal/rough/emissive/accum/denoise
+	static constexpr int kBaseSliderCount = 10; // + recording FPS slider
 
 	// index mapping after base sliders
 	int idxForce_() const { return kBaseSliderCount; }
@@ -70,11 +70,12 @@ private:
 	int idxRREnable_() const { return kBaseSliderCount + 2; }
 	int idxRRStart_() const { return kBaseSliderCount + 3; }
 	int idxRRMin_() const { return kBaseSliderCount + 4; }
-	int idxFanoutEnable_() const { return kBaseSliderCount + 5; }
-	int idxFanoutCap_() const { return kBaseSliderCount + 6; }
-	int idxFanoutAbort_() const { return kBaseSliderCount + 7; }
-	int idxReset_() const { return kBaseSliderCount + 8; }
-	int totalItems_() const { return kBaseSliderCount + 9; }
+	int idxPBREnable_() const { return kBaseSliderCount + 5; }
+	int idxFanoutEnable_() const { return kBaseSliderCount + 6; }
+	int idxFanoutCap_() const { return kBaseSliderCount + 7; }
+	int idxFanoutAbort_() const { return kBaseSliderCount + 8; }
+	int idxReset_() const { return kBaseSliderCount + 9; }
+	int totalItems_() const { return kBaseSliderCount + 10; }
 
 	void clampSel();
 	void resetDefaults();

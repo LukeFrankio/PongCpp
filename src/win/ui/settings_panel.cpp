@@ -21,10 +21,14 @@ void SettingsPanel::resetDefaults() {
 	settings_->pt_accum_alpha = 75;
 	settings_->pt_denoise_strength = 25;
 	settings_->pt_force_full_pixel_rays = 1;
-	settings_->pt_use_ortho = 1;
+	settings_->pt_use_ortho = 0;
 	settings_->pt_rr_enable = 1;
 	settings_->pt_rr_start_bounce = 2;
 	settings_->pt_rr_min_prob_pct = 10;
+	settings_->pt_soft_shadow_samples = 4;
+	settings_->pt_light_radius_pct = 100;
+	settings_->pt_pbr_enable = 1;
+	// Segment tracer settings removed
 	changedSinceOpen_ = true;
 }
 
@@ -43,7 +47,7 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	RECT trTitle {0,(int)(10*ui_scale),winW,(int)(90*ui_scale)};
 	DrawTextW(memDC, L"Path Tracer Settings", -1, &trTitle, DT_CENTER|DT_TOP|DT_SINGLELINE);
 
-	// Sliders
+	// Sliders (segment tracer samples removed)
 	SliderInfo sliders[] = {
 		{L"Rays / Frame", &settings_->pt_rays_per_frame, 1, 1000, 1},
 		{L"Max Bounces", &settings_->pt_max_bounces, 1, 8, 1},
@@ -52,6 +56,9 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		{L"Emissive %", &settings_->pt_emissive, 1, 500, 1},
 		{L"Accum Alpha %", &settings_->pt_accum_alpha, 0, 100, 1},
 		{L"Denoise %", &settings_->pt_denoise_strength, 0, 100, 1},
+		{L"Soft Shadow Spp", &settings_->pt_soft_shadow_samples, 1, 64, 1},
+		{L"Light Radius %", &settings_->pt_light_radius_pct, 10, 500, 1},
+		{L"Recording FPS", &settings_->recording_fps, 15, 60, 1},
 	};
 	int sliderCount = (int)(sizeof(sliders)/sizeof(sliders[0]));
 	int centerX = winW/2; int baseY = (int)(110*ui_scale + 0.5) - scrollOffset_; int rowH = (int)(46*ui_scale + 0.5);
@@ -59,10 +66,10 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	int bottomPanelH = (int)(130*ui_scale + 0.5);
 	int panelTop = winH - bottomPanelH + (int)(6*ui_scale + 0.5);
 
-	// Scroll computation (content height includes fan-out controls)
-	int contentBottom = baseY + (kBaseSliderCount + 8)*rowH + (int)(80*ui_scale + 0.5);
+	// Preliminary scroll computation (will be refined after all dynamic rows known)
 	int topVisible = (int)(80*ui_scale + 0.5);
 	int usableHeight = winH - bottomPanelH;
+	int contentBottom = baseY + (kBaseSliderCount + 9)*rowH + (int)(80*ui_scale + 0.5);
 	maxScroll_ = std::max(0, contentBottom - usableHeight + topVisible);
 
 	// Mouse wheel
@@ -95,15 +102,21 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	int cyRRE   = baseY + (kBaseSliderCount+2)*rowH; bool rrHot = (sel_==idxRREnable_());
 	int cyRRStart = baseY + (kBaseSliderCount+3)*rowH; bool rrStartHot = (sel_==idxRRStart_());
 	int cyRRMin   = baseY + (kBaseSliderCount+4)*rowH; bool rrMinHot = (sel_==idxRRMin_());
-	int cyFanoutEnable = baseY + (kBaseSliderCount+5)*rowH; bool fanEnableHot = (sel_==idxFanoutEnable_());
-	int cyFanoutCap = baseY + (kBaseSliderCount+6)*rowH; bool fanCapHot = (sel_==idxFanoutCap_());
-	int cyFanoutAbort = baseY + (kBaseSliderCount+7)*rowH; bool fanAbortHot = (sel_==idxFanoutAbort_());
+	int cyPBR   = baseY + (kBaseSliderCount+5)*rowH; bool pbrHot = (sel_==idxPBREnable_());
+	int cyFanoutEnable = baseY + (kBaseSliderCount+6)*rowH; bool fanEnableHot = (sel_==idxFanoutEnable_());
+	int cyFanoutCap = baseY + (kBaseSliderCount+7)*rowH; bool fanCapHot = (sel_==idxFanoutCap_());
+	int cyFanoutAbort = baseY + (kBaseSliderCount+8)*rowH; bool fanAbortHot = (sel_==idxFanoutAbort_());
+	// Recalculate scroll range using last dynamic row (fanout abort)
+	int contentBottom2 = cyFanoutAbort + rowH + (int)(80*ui_scale + 0.5);
+	maxScroll_ = std::max(0, contentBottom2 - usableHeight + topVisible);
 	auto drawCenterLine=[&](const std::wstring &txt,int cy,bool hot){ SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210)); RECT r{0,cy-16,winW,cy+16}; DrawTextW(memDC,txt.c_str(),-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE); };
 	drawCenterLine(std::wstring(L"Force 1 ray / pixel: ") + (settings_->pt_force_full_pixel_rays?L"ON":L"OFF"), cyForce, forceHot);
 	drawCenterLine(std::wstring(L"Camera: ") + (settings_->pt_use_ortho?L"Orthographic":L"Perspective"), cyCam, camHot);
 	drawCenterLine(std::wstring(L"Russian Roulette: ") + (settings_->pt_rr_enable?L"ON":L"OFF"), cyRRE, rrHot);
+	drawCenterLine(std::wstring(L"PBR: ") + (settings_->pt_pbr_enable?L"ON":L"OFF"), cyPBR, pbrHot);
 	drawCenterLine(std::wstring(L"Fan-Out Mode: ") + (settings_->pt_fanout_enable?L"ON":L"OFF"), cyFanoutEnable, fanEnableHot);
 	drawCenterLine(std::wstring(L"Fan-Out Abort On Cap: ") + (settings_->pt_fanout_abort?L"ON":L"OFF"), cyFanoutAbort, fanAbortHot);
+	// Segment tracer toggle removed
 	// RR sliders
 	auto drawExtraSlider=[&](const std::wstring& label,int value,int minv,int maxv,int cy,bool hot){
 		SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210)); RECT r{0,cy-16,winW,cy+16}; DrawTextW(memDC,label.c_str(),-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
@@ -145,15 +158,18 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 				case 4: return L"Emissive %: Light intensity.";
 				case 5: return L"Accum Alpha: History blend factor.";
 				case 6: return L"Denoise %: 3x3 blur strength.";
+				// case 7 removed (segment samples)
 			}
 		} else if(idx==idxForce_()) return L"Force 1 Ray: RaysPerFrame treated as per‑pixel.";
 		else if(idx==idxCamera_()) return L"Camera: Ortho or Perspective.";
 		else if(idx==idxRREnable_()) return L"Russian Roulette enable toggle.";
 		else if(idx==idxRRStart_()) return L"RR Start: Bounce to begin termination.";
 		else if(idx==idxRRMin_()) return L"RR Min Prob: Survival probability clamp.";
+			else if(idx==idxPBREnable_()) return L"Physically Based: Energy conserving diffuse + Fresnel specular.";
 			else if(idx==idxFanoutEnable_()) return L"Fan-Out Mode: Exponential combinatorial rays (dangerous).";
-			else if(idx==idxFanoutCap_()) return L"Fan-Out Cap: Safety limit on total rays spawned.";
-			else if(idx==idxFanoutAbort_()) return L"Abort On Cap: Stop spawning when limit reached.";
+					else if(idx==idxFanoutCap_()) return L"Fan-Out Cap: Safety limit on total rays spawned.";
+					else if(idx==idxFanoutAbort_()) return L"Abort On Cap: Stop spawning when limit reached.";
+		// Segment tracer tooltip removed
 		else if(idx==idxReset_()) return L"Reset defaults (non‑destructive until Save).";
 		return L"";
 	};
@@ -169,7 +185,7 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	}
 	// Checkbox style entries
 	auto hoCheck=[&](int cyLine,int idx){ RECT r{centerX - barW/2, cyLine - (int)(18*ui_scale), centerX + barW/2, cyLine + (int)(18*ui_scale)}; if(mouse_x>=r.left && mouse_x<=r.right && mouse_y>=r.top && mouse_y<=r.bottom) hoverIdx=idx; };
-	hoCheck(cyForce, idxForce_()); hoCheck(cyCam, idxCamera_()); hoCheck(cyRRE, idxRREnable_()); hoCheck(cyRRStart, idxRRStart_()); hoCheck(cyRRMin, idxRRMin_()); hoCheck(cyFanoutEnable, idxFanoutEnable_()); hoCheck(cyFanoutAbort, idxFanoutAbort_());
+	hoCheck(cyForce, idxForce_()); hoCheck(cyCam, idxCamera_()); hoCheck(cyRRE, idxRREnable_()); hoCheck(cyRRStart, idxRRStart_()); hoCheck(cyRRMin, idxRRMin_()); hoCheck(cyPBR, idxPBREnable_()); hoCheck(cyFanoutEnable, idxFanoutEnable_()); hoCheck(cyFanoutAbort, idxFanoutAbort_());
 	// Buttons (assign reset/save indices just for tooltip mapping)
 	int resetIdx = idxReset_(); if(mouse_x>=resetBtnR.left && mouse_x<=resetBtnR.right && mouse_y>=resetBtnR.top && mouse_y<=resetBtnR.bottom) hoverIdx=resetIdx; 
 	// (save button intentionally reuses same tooltip as its own action text)
@@ -195,6 +211,8 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_use_ortho = settings_->pt_use_ortho?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxRREnable_()) {
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_rr_enable = settings_->pt_rr_enable?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxPBREnable_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_pbr_enable = settings_->pt_pbr_enable?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxFanoutEnable_()) {
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_fanout_enable = settings_->pt_fanout_enable?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxFanoutAbort_()) {
@@ -261,8 +279,10 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		if (cy < panelTop && hitMid(cyForce)) { settings_->pt_force_full_pixel_rays = settings_->pt_force_full_pixel_rays?0:1; sel_=idxForce_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyCam))   { settings_->pt_use_ortho = settings_->pt_use_ortho?0:1; sel_=idxCamera_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyRRE))   { settings_->pt_rr_enable = settings_->pt_rr_enable?0:1; sel_=idxRREnable_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyPBR))   { settings_->pt_pbr_enable = settings_->pt_pbr_enable?0:1; sel_=idxPBREnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyFanoutEnable)) { settings_->pt_fanout_enable = settings_->pt_fanout_enable?0:1; sel_=idxFanoutEnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyFanoutAbort)) { settings_->pt_fanout_abort = settings_->pt_fanout_abort?0:1; sel_=idxFanoutAbort_(); changedSinceOpen_=true; }
+		// Segment tracer click removed
 		else if (cy >= panelTop) {
 			if (cx>=resetBtnR.left && cx<=resetBtnR.right && cy>=resetBtnR.top && cy<=resetBtnR.bottom) { resetDefaults(); sel_=idxReset_(); original_ = *settings_; }
 			else if (cx>=saveBtnR.left && cx<=saveBtnR.right && cy>=saveBtnR.top && cy<=saveBtnR.bottom) { settingsMgr_->save(*exeDir_ + L"settings.json", *settings_); original_ = *settings_; saveFeedbackTicks_ = 60; }

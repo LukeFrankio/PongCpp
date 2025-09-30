@@ -60,6 +60,7 @@ public:
      * @return Device context handle for the off-screen buffer
      */
     HDC dc() const { return memDC; }
+    HBITMAP getBitmap() const { return bmp; }
     
 private:
     HDC memDC = nullptr;      ///< Memory device context for off-screen drawing

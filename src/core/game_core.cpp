@@ -33,7 +33,7 @@ void GameCore::reset() {
 
     // Obstacles
     s.obstacles.clear();
-    if (s.mode == GameMode::Obstacles) {
+    if (s.mode == GameMode::Obstacles || s.mode == GameMode::ObstaclesMulti) {
         // three moving vertical-ish blocks in center
         int count = 3;
         for (int i=0;i<count;++i) {
@@ -43,7 +43,7 @@ void GameCore::reset() {
             s.obstacles.push_back(ob);
         }
     }
-    if (s.mode == GameMode::MultiBall) {
+    if (s.mode == GameMode::MultiBall || s.mode == GameMode::ObstaclesMulti) {
         // spawn additional balls
         for (int i=0;i<2;i++) spawn_ball(0.9 + 0.2*i);
     }
@@ -117,8 +117,23 @@ void GameCore::update(double dt) {
             if (contact_offset > 1.0) contact_offset = 1.0; if (contact_offset < -1.0) contact_offset = -1.0;
             double tx = -ny, ty = nx;
             double tangential = tangent_strength * contact_offset + paddle_influence * paddle_v;
-            bvx += tx * tangential; bvy += ty * tangential;
-            bvx *= restitution; bvy *= restitution;
+            if (physical_mode) {
+                double preSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                bvx += tx * tangential; bvy += ty * tangential;
+                double newSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                if (newSpeed > 1e-6) {
+                    double target = preSpeed * restitution;
+                    double scale = target / newSpeed;
+                    bvx *= scale; bvy *= scale;
+                }
+                double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+            } else {
+                // Arcade: simple additive influence and mild speed-up
+                bvx += tx * (tangent_strength * contact_offset * 0.5);
+                bvy += ty * (tangent_strength * contact_offset * 0.5);
+                bvx *= 1.02; bvy *= 1.02;
+                double maxsp = 80.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+            }
             return true;
         }
         // caps are drawn as ellipses on the left and right sides of the rectangle
@@ -158,8 +173,21 @@ void GameCore::update(double dt) {
                 if (contact_offset > 1.0) contact_offset = 1.0; if (contact_offset < -1.0) contact_offset = -1.0;
                 double tx = -ny, ty = nx;
                 double tangential = tangent_strength * contact_offset + paddle_influence * paddle_v;
-                bvx += tx * tangential; bvy += ty * tangential;
-                bvx *= restitution; bvy *= restitution;
+                if (physical_mode){
+                    double preSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                    bvx += tx * tangential; bvy += ty * tangential;
+                    double newSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                    if (newSpeed > 1e-6) {
+                        double target = preSpeed * restitution;
+                        double scale = target / newSpeed; bvx*=scale; bvy*=scale;
+                    }
+                    double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                } else {
+                    bvx += tx * (tangent_strength * contact_offset * 0.5);
+                    bvy += ty * (tangent_strength * contact_offset * 0.5);
+                    bvx *= 1.02; bvy *= 1.02;
+                    double maxsp = 80.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                }
                 return true;
             }
         }
@@ -189,8 +217,21 @@ void GameCore::update(double dt) {
                 if (contact_offset > 1.0) contact_offset = 1.0; if (contact_offset < -1.0) contact_offset = -1.0;
                 double tx = -ny, ty = nx;
                 double tangential = tangent_strength * contact_offset + paddle_influence * paddle_v;
-                bvx += tx * tangential; bvy += ty * tangential;
-                bvx *= restitution; bvy *= restitution;
+                if (physical_mode){
+                    double preSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                    bvx += tx * tangential; bvy += ty * tangential;
+                    double newSpeed = std::sqrt(bvx*bvx + bvy*bvy);
+                    if (newSpeed > 1e-6) {
+                        double target = preSpeed * restitution;
+                        double scale = target / newSpeed; bvx*=scale; bvy*=scale;
+                    }
+                    double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                } else {
+                    bvx += tx * (tangent_strength * contact_offset * 0.5);
+                    bvy += ty * (tangent_strength * contact_offset * 0.5);
+                    bvx *= 1.02; bvy *= 1.02;
+                    double maxsp = 80.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                }
                 return true;
             }
         }
@@ -287,18 +328,34 @@ void GameCore::update(double dt) {
     double left_paddle_v = (s.left_y - left_y_before) / dt;
     double right_paddle_v = (s.right_y - right_y_before) / dt;
 
-    // AI for right paddle (after substeps) - track closest ball moving toward it
-    double target_ball_y = s.ball_y;
-    double min_dx = 1e9;
-    for (auto &b : s.balls) {
-        double dx = (s.gw - b.x);
-        if (b.vx > 0 && dx < min_dx) { min_dx = dx; target_ball_y = b.y; }
+    // AI for paddles if enabled
+    if (right_ai_enabled) {
+        double target_ball_y = s.ball_y;
+        double min_dx = 1e9;
+        for (auto &b : s.balls) {
+            double dx = (s.gw - b.x);
+            if (b.vx > 0 && dx < min_dx) { min_dx = dx; target_ball_y = b.y; }
+        }
+        double target = target_ball_y - s.paddle_h/2.0;
+        double dy = target - s.right_y;
+        double max_speed = 25.0 * ai_speed * dt;
+        if (fabs(dy) > max_speed) dy = (dy > 0 ? 1 : -1) * max_speed;
+        s.right_y += dy;
     }
-    double target = target_ball_y - s.paddle_h/2.0;
-    double dy = target - s.right_y;
-    double max_speed = 25.0 * ai_speed * dt;
-    if (fabs(dy) > max_speed) dy = (dy > 0 ? 1 : -1) * max_speed;
-    s.right_y += dy;
+    if (left_ai_enabled) {
+        // Track closest ball moving toward left paddle (vx < 0)
+        double target_ball_y = s.ball_y;
+        double min_dx = 1e9;
+        for (auto &b : s.balls) {
+            double dx = b.x; // distance from left edge
+            if (b.vx < 0 && dx < min_dx) { min_dx = dx; target_ball_y = b.y; }
+        }
+        double target = target_ball_y - s.paddle_h/2.0;
+        double dy = target - s.left_y;
+        double max_speed = 25.0 * ai_speed * dt;
+        if (fabs(dy) > max_speed) dy = (dy > 0 ? 1 : -1) * max_speed;
+        s.left_y += dy;
+    }
 
     // ThreeEnemies horizontal paddle AI: track nearest ball
     if (s.mode == GameMode::ThreeEnemies) {

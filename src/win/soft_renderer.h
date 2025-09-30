@@ -62,6 +62,11 @@ struct SRConfig {
     bool  fanoutCombinatorial = false;     // Master toggle for experimental fan-out
     uint64_t fanoutMaxTotalRays = 2000000;  // Hard cap to abort to protect performance
     bool  fanoutAbortOnCap = true;          // If true, abort fan-out tracing when cap exceeded
+
+    // Soft shadow / PBR extensions
+    int   softShadowSamples = 4;            // Number of importance samples per light for soft shadows (1=hard shadow)
+    float lightRadiusScale = 1.0f;          // Multiplier on physical ball radius when treated as area light
+    bool  pbrEnable = true;                 // Enable physically based energy terms (Lambert 1/pi, simple Fresnel, energy conservation)
 };
 
 // Runtime statistics for profiling / HUD overlay

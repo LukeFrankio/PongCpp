@@ -23,7 +23,8 @@ enum class GameMode {
     Classic = 0,
     ThreeEnemies,
     Obstacles,
-    MultiBall
+    MultiBall,
+    ObstaclesMulti  ///< Obstacles + MultiBall combined mode
 };
 
 /**
@@ -206,6 +207,9 @@ private:
     GameState s;                    ///< Current game state
     double vx, vy;                  ///< Legacy primary ball velocity (mirrors balls[0])
     double ai_speed = 1.0;          ///< AI difficulty multiplier
+    bool left_ai_enabled = false;   ///< When true, left paddle is AI-controlled
+    bool right_ai_enabled = true;   ///< When true, right paddle is AI-controlled
+    bool physical_mode = true;      ///< Use physically-based bounce (true) or legacy arcade (false)
     
     /// @name Paddle Physics State
     /// @{
@@ -215,8 +219,17 @@ private:
     
     /// @name Physics Tuning Parameters
     /// @{
-    double restitution = 1.03;      ///< Energy multiplier on paddle hits (>1.0 = slight speedup)
+    double restitution = 1.01;      ///< Near-elastic restitution (slight speed gain to keep action lively)
     double tangent_strength = 6.0;  ///< How much contact offset affects ball spin
     double paddle_influence = 1.5;  ///< How much paddle velocity transfers to ball
     /// @}
+
+public:
+    // AI enable/disable controls (used by UI/player mode)
+    void enable_left_ai(bool e){ left_ai_enabled = e; }
+    void enable_right_ai(bool e){ right_ai_enabled = e; }
+    bool left_ai() const { return left_ai_enabled; }
+    bool right_ai() const { return right_ai_enabled; }
+    void set_physical_mode(bool on){ physical_mode = on; }
+    bool is_physical() const { return physical_mode; }
 };

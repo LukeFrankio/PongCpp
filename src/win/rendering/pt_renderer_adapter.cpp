@@ -20,6 +20,10 @@ static void applySettings(SoftRenderer* r, SRConfig& cur, const Settings& s){
 	apply(cur.rouletteEnable, s.pt_rr_enable!=0);
 	apply(cur.rouletteStartBounce, s.pt_rr_start_bounce);
 	apply(cur.rouletteMinProb, s.pt_rr_min_prob_pct/100.0f);
+	// Soft shadow / PBR settings
+	apply(cur.softShadowSamples, s.pt_soft_shadow_samples);
+	float lr = s.pt_light_radius_pct / 100.0f; if(lr < 0.1f) lr = 0.1f; if(lr>5.0f) lr=5.0f; apply(cur.lightRadiusScale, lr);
+	apply(cur.pbrEnable, s.pt_pbr_enable!=0);
 	// Experimental fan-out settings
 	bool wantFan = (s.pt_fanout_enable!=0);
 	if(cur.fanoutCombinatorial != wantFan){ cur.fanoutCombinatorial = wantFan; changed=true; }
@@ -30,6 +34,10 @@ static void applySettings(SoftRenderer* r, SRConfig& cur, const Settings& s){
 	if(cur.raysPerFrame < 1){ cur.raysPerFrame = 1; changed=true; }
 	if(cur.internalScalePct < 25){ cur.internalScalePct = 25; changed=true; }
 	if(cur.accumAlpha < 0.01f){ cur.accumAlpha = 0.01f; changed=true; }
+	if(cur.softShadowSamples < 1){ cur.softShadowSamples = 1; changed=true; }
+	if(cur.softShadowSamples > 64){ cur.softShadowSamples = 64; changed=true; }
+	if(cur.lightRadiusScale < 0.1f){ cur.lightRadiusScale = 0.1f; changed=true; }
+	if(cur.lightRadiusScale > 5.0f){ cur.lightRadiusScale = 5.0f; changed=true; }
 	if(changed){ r->configure(cur); r->resetHistory(); }
 }
 

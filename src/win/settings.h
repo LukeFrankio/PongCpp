@@ -16,6 +16,7 @@
  * to disk and restored between game sessions.
  */
 struct Settings {
+    int recording_mode = 0; ///< Recording mode: 0=off, 1=on (record at fixed 60fps)
     int control_mode = 1;  ///< Control mode: 0=keyboard, 1=mouse
     int ai = 1;           ///< AI difficulty: 0=easy, 1=normal, 2=hard
     int renderer = 0;     ///< 0=classic GDI, 1=path tracer
@@ -30,7 +31,7 @@ struct Settings {
     int pt_accum_alpha = 75;          ///< Temporal accumulation alpha percent (1..50 => 0.01..0.50)
     int pt_denoise_strength = 25;     ///< Spatial denoise strength percent (0..100)
     int pt_force_full_pixel_rays = 1; ///< 1 = force at least 1 primary ray per pixel at internal resolution
-    int pt_use_ortho = 1;             ///< 1 = use orthographic camera, 0 = perspective
+    int pt_use_ortho = 0;             ///< 1 = use orthographic camera, 0 = perspective
     // Russian roulette settings (percent/min probability stored as scaled ints for simplicity)
     int pt_rr_enable = 1;             ///< 1 = enable Russian roulette termination
     int pt_rr_start_bounce = 2;       ///< Bounce index at or after which roulette starts (1..16)
@@ -39,6 +40,19 @@ struct Settings {
     int pt_fanout_enable = 0;         ///< 1 = enable exponential fan-out mode
     int pt_fanout_cap = 2000000;      ///< Safety cap for total rays
     int pt_fanout_abort = 1;          ///< 1 = abort when cap exceeded, 0 = continue (may freeze)
+    // Segment tracer (2D GI) alternative renderer
+    // Soft shadows / PBR additions
+    int pt_soft_shadow_samples = 4;    ///< Soft shadow samples per light (1..64) mapped directly
+    int pt_light_radius_pct = 100;     ///< Light radius scale percent (10..500 => 0.1x .. 5.0x)
+    int pt_pbr_enable = 1;             ///< Enable PBR energy terms (1=on,0=off)
+    // Gameplay / meta
+    int player_mode = 0;               ///< 0=1P vs AI, 1=2 Players, 2=AI vs AI
+    // Recording
+    int recording_fps = 60;            ///< Target recording FPS (15..60)
+    // Physics / HUD
+    int physics_mode = 1;              ///< 0=Arcade physics, 1=Physically-based paddle bounce
+    int hud_show_play = 1;             ///< 1=Show HUD during normal gameplay
+    int hud_show_record = 1;           ///< 1=Show HUD overlays while recording
 };
 
 /**

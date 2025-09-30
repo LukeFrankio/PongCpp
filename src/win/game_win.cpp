@@ -14,6 +14,9 @@
 #include <cmath>
 #include <cwchar>
 #include <cstdio>
+#include <filesystem>
+#include <sstream>
+#include <fstream>
 
 #include "../core/game_core.h"
 #include "highscores.h"
@@ -52,6 +55,15 @@ struct WinState {
     InputRouter  *inputRouter = nullptr;
     HFONT         uiFont = nullptr;
     HFONT         uiOldFont = nullptr;
+};
+
+struct RecordingState {
+    bool active = false;                // recording in progress
+    std::wstring dir;                   // output directory
+    int frameIndex = 0;                 // current frame number
+    double simTime = 0.0;               // accumulated simulated time
+    double fixedStep = 1.0/60.0;        // fixed timestep for recording
+    int fps = 60;                       // target recording fps (derived from settings.recording_fps)
 };
 
 static UINT query_dpi(HWND hwnd, int current) {
@@ -115,6 +127,7 @@ int run_win_pong(HINSTANCE inst, int show) {
 
     // Renderers / HUD / State machine loop
     ClassicRenderer classic; PTRendererAdapter ptAdapter; HudOverlay hud;    
+    RecordingState rec; // initialized inactive
     st.ui_mode = 1; // start in menu
     if(renderer==R_PATH) ptAdapter.resize(st.width, st.height); else classic.onResize(st.width, st.height);
     auto last = std::chrono::steady_clock::now(); const double target=1.0/60.0; static int lastW=-1,lastH=-1;
@@ -123,8 +136,14 @@ int run_win_pong(HINSTANCE inst, int show) {
         MSG msg; while (PeekMessage(&msg,nullptr,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now-last).count();
-        if (dt < target) { std::this_thread::sleep_for(std::chrono::duration<double>(target-dt)); continue; }
-        last = now;
+        if (!rec.active) {
+            if (dt < target) { std::this_thread::sleep_for(std::chrono::duration<double>(target-dt)); continue; }
+            last = now;
+        } else {
+            // In recording (render) mode we ignore real time and drive fixed simulation steps as fast as possible.
+            dt = rec.fixedStep; // force fixed step
+            last = now; // keep message pump happy
+        }
 
         int winW = st.width, winH = st.height;
         int dpi  = query_dpi(hwnd, st.dpi);
@@ -156,12 +175,30 @@ int run_win_pong(HINSTANCE inst, int show) {
                             case 1: session.core().set_mode(GameMode::ThreeEnemies); break;
                             case 2: session.core().set_mode(GameMode::Obstacles); break;
                             case 3: session.core().set_mode(GameMode::MultiBall); break;
+                            case 4: session.core().set_mode(GameMode::ObstaclesMulti); break;
                         }
+                        // Apply physics mode toggle (0 arcade, 1 physical)
+                        session.core().set_physical_mode(settings.physics_mode==1);
                         // Transition to gameplay: clear backbuffer and reset PT history so menu isn't blended over
                         st.ui_mode=0; 
                         HBRUSH black=(HBRUSH)GetStockObject(BLACK_BRUSH); RECT clr{0,0,winW,winH}; FillRect(st.memDC,&clr,black);
                         if(renderer==R_PATH) { ptAdapter.resize(winW,winH); } // triggers history reset inside resize
                         session.core().reset();
+                        // If recording mode toggle is on, initialize recording session
+                        if(settings.recording_mode && !rec.active){
+                            // Create output directory with timestamp
+                            SYSTEMTIME stime; GetLocalTime(&stime);
+                            wchar_t buf[128]; swprintf(buf,128,L"recording_%04d%02d%02d_%02d%02d%02d/", stime.wYear, stime.wMonth, stime.wDay, stime.wHour, stime.wMinute, stime.wSecond);
+                            rec.dir = exeDir + buf;
+                            std::error_code fec; std::filesystem::create_directories(rec.dir, fec);
+                            rec.active = true; rec.frameIndex = 0; rec.simTime = 0.0;
+                            // Apply user-selected recording FPS (clamped by persistence layer 15..60)
+                            if(settings.recording_fps < 15) settings.recording_fps = 15; else if(settings.recording_fps > 60) settings.recording_fps = 60;
+                            rec.fps = settings.recording_fps;
+                            int clampFps = settings.recording_fps;
+                            if(clampFps < 15) clampFps = 15; else if(clampFps > 60) clampFps = 60;
+                            rec.fixedStep = 1.0 / (double)clampFps;
+                        }
                         break; }
                     case MenuAction::Settings: openSettings(); break;
                     case MenuAction::Scores: openScores(); break;
@@ -189,26 +226,51 @@ int run_win_pong(HINSTANCE inst, int show) {
             if(st.inputRouter){ const auto &is=st.inputRouter->get(); if(is.just_pressed('Q')){ st.ui_mode=1; continue; } }
         }
 
-        GameState &gs = session.core().state();
+    GameState &gs = session.core().state();
         bool renderGameplay = (st.ui_mode==0);
-        if (ctrl == CTRL_KEYBOARD) {
-            if (st.inputRouter) {
-                const auto &is = st.inputRouter->get();
-                if (renderGameplay && is.is_pressed('W')) session.core().move_left_by(-120.0*dt);
-                if (renderGameplay && is.is_pressed('S')) session.core().move_left_by(120.0*dt);
+        // Player mode logic:
+        // player_mode: 0 = 1P vs AI (left human, right AI)
+        //              1 = 2 Players (left + right human)
+        //              2 = AI vs AI  (both AI, ignore input)
+        int pmode = settings.player_mode;
+        if(pmode < 0 || pmode > 2) pmode = 0;
+        bool leftHuman  = (pmode != 2);
+        bool rightHuman = (pmode == 1); // only 2P mode makes right human
+
+        // Apply human control for left paddle
+        if (renderGameplay && leftHuman) {
+            if (ctrl == CTRL_KEYBOARD) {
+                if (st.inputRouter) {
+                    const auto &is = st.inputRouter->get();
+                    if (is.is_pressed('W')) session.core().move_left_by(-120.0*dt);
+                    if (is.is_pressed('S')) session.core().move_left_by(120.0*dt);
+                }
+            } else { // mouse
+                double my = (double)st.mouse_y / winH * gs.gh;
+                session.core().set_left_y(my - gs.paddle_h/2.0);
             }
-        } else {
-            double my = (double)st.mouse_y / winH * gs.gh;
-            if(renderGameplay) session.core().set_left_y(my - gs.paddle_h/2.0);
         }
-        if (st.inputRouter) {
+
+        // Apply human control for right paddle (arrow keys) only when rightHuman
+        if (renderGameplay && rightHuman && st.inputRouter) {
             const auto &is = st.inputRouter->get();
-            if (renderGameplay && is.is_pressed(VK_UP)) session.core().move_right_by(-120.0*dt);
-            if (renderGameplay && is.is_pressed(VK_DOWN)) session.core().move_right_by(120.0*dt);
+            if (is.is_pressed(VK_UP)) session.core().move_right_by(-120.0*dt);
+            if (is.is_pressed(VK_DOWN)) session.core().move_right_by(120.0*dt);
         }
+
+        // Configure AI enable flags inside core each frame so live menu changes apply on return to gameplay
+        // Left AI active only in AI vs AI mode; Right AI active in modes 0 (1P vs AI) and 2 (AI vs AI)
+    session.core().enable_left_ai(pmode == 2);               // left AI only in AI vs AI
+    session.core().enable_right_ai((pmode == 0) || (pmode == 2)); // right AI in 1P vs AI and AI vs AI
         if(renderGameplay){
             session.core().set_ai_speed(ai==AI_EASY?0.6:(ai==AI_NORMAL?1.0:1.6));
-            session.update(dt);
+            if(rec.active){
+                // Fixed-step simulation already enforced via dt override
+                session.update(dt);
+                rec.simTime += dt;
+            } else {
+                session.update(dt);
+            }
         }
         // Rendering
         if(renderGameplay){
@@ -218,11 +280,79 @@ int run_win_pong(HINSTANCE inst, int show) {
                 classic.render(gs, st.memDC, winW, winH, dpi);
             }
             int highScore = highs.empty()?0:highs.front().score;
-            hud.draw(gs, renderer==R_PATH?ptAdapter.stats():nullptr, st.memDC, winW, winH, dpi, highScore);
+            bool showHud = settings.hud_show_play!=0; // default for gameplay
+            if(rec.active && settings.hud_show_record==0) showHud = false; // hide entirely while recording if user chose so
+            if(showHud) {
+                hud.draw(gs, renderer==R_PATH?ptAdapter.stats():nullptr, st.memDC, winW, winH, dpi, highScore);
+            }
+            if(rec.active){
+                // Recording info panel to the right of standard HUD (HUD width ~280px)
+                int boxW = 220; int boxX = 300; int boxY = 0; int boxH = 90;
+                HBRUSH rb = CreateSolidBrush(RGB(8,8,12)); RECT rr{boxX,boxY,boxX+boxW,boxY+boxH}; FillRect(st.memDC,&rr,rb); DeleteObject(rb);
+                SetBkMode(st.memDC, TRANSPARENT); SetTextColor(st.memDC, RGB(255,80,80));
+                wchar_t recTxt[128]; swprintf(recTxt,128,L"RECORDING %dfps", rec.fps);
+                RECT r1{boxX+8,boxY+6,boxX+boxW-8,boxY+26}; DrawTextW(st.memDC, recTxt, -1, &r1, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                int fpsDiv = rec.fps < 1 ? 1 : rec.fps;
+                double seconds = rec.frameIndex / (double)fpsDiv;
+                wchar_t meta[128]; swprintf(meta,128,L"Frames: %d", rec.frameIndex);
+                RECT r2{boxX+8,boxY+28,boxX+boxW-8,boxY+48}; DrawTextW(st.memDC, meta, -1, &r2, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                wchar_t meta2[128]; swprintf(meta2,128,L"Time: %.1fs", seconds);
+                RECT r3{boxX+8,boxY+48,boxX+boxW-8,boxY+68}; DrawTextW(st.memDC, meta2, -1, &r3, DT_LEFT|DT_TOP|DT_SINGLELINE);
+            }
         }
         // Menu or modal already drew into st.memDC; no HUD overlay in those modes.
 
         HDC hdc=GetDC(hwnd); BitBlt(hdc,0,0,winW,winH,st.memDC,0,0,SRCCOPY); ReleaseDC(hwnd,hdc);
+
+        // Frame capture after present (use back buffer DC content)
+        if(rec.active && renderGameplay){
+            // Capture BMP (BGRA 32-bit) and pad to even dimensions (H.264 yuv420p requires even w/h)
+            BITMAPINFO bmi{}; bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bmi.bmiHeader.biWidth = winW; bmi.bmiHeader.biHeight = winH; // bottom-up
+            bmi.bmiHeader.biPlanes = 1; bmi.bmiHeader.biBitCount = 32; bmi.bmiHeader.biCompression = BI_RGB;
+            std::vector<uint8_t> raw((size_t)winW * (size_t)winH * 4);
+            if(GetDIBits(st.memDC, st.backBuf->getBitmap(), 0, (UINT)winH, raw.data(), &bmi, DIB_RGB_COLORS)){
+                int recW = (winW & 1)? (winW+1): winW;
+                int recH = (winH & 1)? (winH+1): winH;
+                std::vector<uint8_t> pixels((size_t)recW * (size_t)recH * 4, 0);
+                // Copy existing rows; bottom-up order preserved. Extra column/row left black.
+                for(int y=0; y<winH; ++y){
+                    const uint8_t* srcRow = &raw[(size_t)y * winW * 4];
+                    uint8_t* dstRow = &pixels[(size_t)y * recW * 4];
+                    std::memcpy(dstRow, srcRow, (size_t)winW * 4);
+                }
+                // Construct file path
+                wchar_t fname[256]; swprintf(fname,256,L"frame_%06d.bmp", rec.frameIndex);
+                std::wstring fpath = rec.dir + fname;
+                uint32_t rowSize = recW * 4; // 4-byte aligned already
+                uint32_t pixelDataSize = rowSize * recH;
+                uint32_t fileSize = 14 + 40 + pixelDataSize;
+                std::ofstream ofs(fpath, std::ios::binary);
+                if(ofs){
+                    uint8_t fh[14]; std::memset(fh,0,14); fh[0]='B'; fh[1]='M'; *reinterpret_cast<uint32_t*>(fh+2)=fileSize; *reinterpret_cast<uint32_t*>(fh+10)=14+40; ofs.write((char*)fh,14);
+                    BITMAPINFOHEADER bih{}; bih.biSize=40; bih.biWidth=recW; bih.biHeight=recH; bih.biPlanes=1; bih.biBitCount=32; bih.biCompression=BI_RGB; bih.biSizeImage=pixelDataSize; ofs.write((char*)&bih,40);
+                    ofs.write((char*)pixels.data(), pixelDataSize);
+                }
+                rec.frameIndex++;
+            }
+        }
+
+        // Stop recording when user leaves gameplay (menu/modal) or game ends
+        if(rec.active && st.ui_mode != 0){
+            // Write summary file
+            std::wstring summary = rec.dir + L"recording_info.txt";
+            std::ofstream s(summary);
+            if(s){
+                s << "Frames: " << rec.frameIndex << "\n";
+                s << "FPS: " << rec.fps << "\n";
+                s << "Note: Frames padded to even dimensions for H.264 compatibility.\n";
+                s << "Suggested ffmpeg command (PowerShell):\n";
+                s << "ffmpeg -framerate " << rec.fps << " -i frame_%06d.bmp -c:v libx264 -pix_fmt yuv420p output.mp4\n";
+                s << "If you need HEVC: ffmpeg -framerate " << rec.fps << " -i frame_%06d.bmp -c:v libx265 -pix_fmt yuv420p10le output_hevc.mp4\n";
+            }
+            rec.active = false;
+            // Automatically turn off recording toggle so user must re-enable explicitly
+            settings.recording_mode = 0; settings_changed = true;
+        }
     }
 
     if(st.memDC && st.uiOldFont) SelectObject(st.memDC, st.uiOldFont); if(st.uiFont) DeleteObject(st.uiFont); delete st.inputRouter; delete st.backBuf; return 0; }

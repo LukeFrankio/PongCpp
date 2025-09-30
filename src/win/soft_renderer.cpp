@@ -51,6 +51,8 @@ void SoftRenderer::configure(const SRConfig &cfg) {
     if (config.emissiveIntensity < 0.1f) config.emissiveIntensity = 0.1f; if (config.emissiveIntensity > 5.0f) config.emissiveIntensity = 5.0f;
     if (config.rouletteStartBounce < 1) config.rouletteStartBounce = 1; if (config.rouletteStartBounce > 16) config.rouletteStartBounce = 16;
     if (config.rouletteMinProb < 0.01f) config.rouletteMinProb = 0.01f; if (config.rouletteMinProb > 0.9f) config.rouletteMinProb = 0.9f;
+    if (config.softShadowSamples < 1) config.softShadowSamples = 1; if (config.softShadowSamples > 64) config.softShadowSamples = 64;
+    if (config.lightRadiusScale < 0.1f) config.lightRadiusScale = 0.1f; if (config.lightRadiusScale > 5.0f) config.lightRadiusScale = 5.0f;
     updateInternalResolution();
 }
 
@@ -137,6 +139,7 @@ static bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, float tMax, Hit
 }
 
 void SoftRenderer::render(const GameState &gs) {
+    // (Segment tracer removed; integrate its tone mapping into main pipeline instead)
     if (!config.enablePathTracing) return; // nothing (caller can draw classic)
     if (rtW==0||rtH==0) return;
 
@@ -178,7 +181,7 @@ void SoftRenderer::render(const GameState &gs) {
     Vec3 bottomCenter = toWorld((float)gs.bottom_x, gh - 2.0f);
     float horizThickness = 0.04f;
     // Obstacles as boxes
-    bool useObs = (gs.mode == GameMode::Obstacles);
+    bool useObs = (gs.mode == GameMode::Obstacles || gs.mode == GameMode::ObstaclesMulti);
     struct Box { Vec3 bmin,bmax; };
     std::vector<Box> obsBoxes;
     if (useObs) {
@@ -216,26 +219,86 @@ void SoftRenderer::render(const GameState &gs) {
     }
     // Path trace core
     bool fanoutMode = config.fanoutCombinatorial;
-    // Shadow test toward ball center (treat ball as light emitter only, so skip self when hit.mat==1)
-        auto shadowOccluded = [&](Vec3 from)->bool {
-            // For now light is first ball center (others non-emissive or dim)
-            Vec3 to = ballCenters[0]; Vec3 dir = to - from; float maxT = std::sqrt(std::max(0.0f, dot(dir,dir))); if (maxT < 1e-4f) return false; dir = dir / maxT;
-            Hit best; best.t = maxT - 1e-3f; Hit tmp;
-            if (intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)) return true;
-            if (intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)) return true;
-            if (intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)) return true;
-            float inflate = 0.01f;
-            if (intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
-            if (intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
-            if (useHoriz) {
-                if (intersectBox(from,dir, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
-                if (intersectBox(from,dir, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
+    // Occlusion test toward arbitrary point; can optionally ignore one emissive sphere index
+    auto occludedToPoint = [&](Vec3 from, Vec3 to, int ignoreSphere)->bool {
+        Vec3 dir = to - from; float maxT = std::sqrt(std::max(0.0f, dot(dir,dir))); if (maxT < 1e-4f) return false; dir = dir / maxT;
+        Hit tmp; Hit best; best.t = maxT - 1e-3f;
+        // Planes
+        if (intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)) return true;
+        if (intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)) return true;
+        if (intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)) return true;
+        // Paddles (inflated)
+        float inflate = 0.01f;
+        if (intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
+        if (intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2)) return true;
+        if (useHoriz) {
+            if (intersectBox(from,dir, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
+            if (intersectBox(from,dir, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)) return true;
+        }
+        if (useObs) {
+            for (auto &b : obsBoxes) if (intersectBox(from,dir, b.bmin, b.bmax, best.t, tmp, 0)) return true;
+        }
+        // Other spheres block (soft shadows & inter-light occlusion)
+        for (size_t si=0; si<ballCenters.size(); ++si) {
+            if ((int)si == ignoreSphere) continue; // don't self-shadow chosen sample sphere
+            if (intersectSphere(from,dir, ballCenters[si], ballRs[si]*config.lightRadiusScale, best.t, tmp, 1)) return true;
+        }
+        return false;
+    };
+    // Sample direct lighting from all emissive spheres with soft shadows.
+    auto sampleDirect = [&](Vec3 pos, Vec3 n, Vec3 viewDir, uint32_t &seed, bool isMetal)->Vec3 {
+        if (ballCenters.empty()) return Vec3{0,0,0};
+        int lightCount = (int)ballCenters.size();
+        int shadowSamples = std::max(1, config.softShadowSamples);
+        Vec3 sum{0,0,0};
+        for (int li=0; li<lightCount; ++li) {
+            Vec3 center = ballCenters[li];
+            float radius = ballRs[li] * config.lightRadiusScale;
+            Vec3 lightAccum{0,0,0};
+            for (int s=0; s<shadowSamples; ++s) {
+                // Uniform point on sphere surface (normal distribution via sphere point picking)
+                float u1 = (xorshift(seed)&1023)/1024.0f;
+                float u2 = (xorshift(seed)&1023)/1024.0f;
+                float z = 1.0f - 2.0f*u1; // cosine of polar angle
+                float rxy = std::sqrt(std::max(0.0f, 1.0f - z*z));
+                float phi = 2.0f*3.1415926f*u2;
+                Vec3 spherePt = center + Vec3{rxy*std::cos(phi), rxy*std::sin(phi), z} * radius;
+                Vec3 L = spherePt - pos; float dist2 = dot(L,L); float dist = (dist2>1e-6f)? std::sqrt(dist2):0.0f; if (dist < 1e-6f) continue; L = L / dist;
+                float ndotl = std::max(0.0f, dot(n,L)); if (ndotl <= 0.0f) continue;
+                if (occludedToPoint(pos + n*0.002f, spherePt, li)) continue;
+                // Basic Lambert * point radiance with inverse square; treat sample weight as average over sphere area samples
+                Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity;
+                // Normalization when multiple lights (keep total similar); also divide by samples
+                if (lightCount>1) emitColor = emitColor / (float)lightCount;
+                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
+                float brdfScale = 1.0f;
+                if (config.pbrEnable) {
+                    if (!isMetal) {
+                        brdfScale = 1.0f/3.1415926f; // Lambert diffuse (albedo = 0.62..0.67 encoded in throughput earlier)
+                        lightAccum = lightAccum + emitColor * (ndotl * atten * brdfScale);
+                    } else {
+                        // Simple specular (Schlick Fresnel * NdotL) with roughness attenuation
+                        Vec3 V = norm(viewDir * -1.0f); // view direction towards camera
+                        Vec3 H = norm(V + L);
+                        float VoH = std::max(0.0f, dot(V,H));
+                        Vec3 F0{0.86f,0.88f,0.94f};
+                        Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
+                        float rough = std::clamp(config.metallicRoughness, 0.0f, 1.0f);
+                        float gloss = 1.0f - 0.7f*rough; // simple energy loss with roughness
+                        // Very approximate microfacet: we skip full D/G terms and just modulate by ndotl and a gloss factor to keep energy bounded.
+                        Vec3 spec = F * (ndotl * gloss); // F already handles view-angle energy shift
+                        lightAccum = lightAccum + emitColor * (spec * atten);
+                    }
+                } else {
+                    // Legacy behavior (no 1/pi so brighter)
+                    lightAccum = lightAccum + emitColor * (ndotl * atten);
+                }
             }
-            if (useObs) {
-                for (auto &b : obsBoxes) if (intersectBox(from,dir, b.bmin, b.bmax, best.t, tmp, 0)) return true;
-            }
-            return false;
-        };
+            lightAccum = lightAccum / (float)shadowSamples;
+            sum = sum + lightAccum;
+        }
+        return sum;
+    };
     if (fanoutMode) {
     // Experimental exponential fan-out (adaptive sampled variant): original idea was full Cartesian expansion
     // spawning P^d rays (per primary pixel) which becomes intractable. We approximate by sampling a subset of
@@ -318,25 +381,16 @@ void SoftRenderer::render(const GameState &gs) {
                     Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 d = norm( u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2) );
                     r.ro = best.pos + best.n*0.002f; r.rd = d; r.throughput = r.throughput * Vec3{0.62f,0.64f,0.67f};
-                    // Direct lighting with shadow (physically based attenuation). No artificial bounce light to preserve shadow contrast.
-                    if(!shadowOccluded(best.pos + n*0.002f)){
-                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L = L*invDist; float ndotl = std::max(0.0f, dot(n,L));
-                        // 1/(4πr^2) attenuation, scale down a little so overall scene brightness remains reasonable
-                        float atten = 1.0f / (4.0f*3.1415926f*std::max(1e-4f, dist2));
-                        Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity * 0.35f; // slight boost to compensate for removed ambient fill
-                        Vec3 direct = emitColor * (ndotl * atten);
-                        pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct;
-                        contribCount[r.pixelIndex]++;
-                    }
+                    Vec3 direct = sampleDirect(best.pos, n, r.rd, r.seed, false);
+                    if (direct.x>0||direct.y>0||direct.z>0) { pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct; contribCount[r.pixelIndex]++; }
                 } else if (best.mat==2) {
                     Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
                     float rough = config.metallicRoughness; float r1 = 2*3.1415926f*((xorshift(r.seed)&1023)/1024.0f); float r2=(xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
                     Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
                     r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f; r.throughput = r.throughput * Vec3{0.86f,0.88f,0.94f};
-                    // Direct light with shadow (reduced contribution vs diffuse by factor for metallic look)
-                    if(!shadowOccluded(best.pos + n*0.002f)){
-                        Vec3 L = ballC - best.pos; float dist2 = dot(L,L); float invDist = (dist2>1e-6f)? 1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.28f; Vec3 direct=emitColor*(ndotl*atten*0.7f); pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*direct; contribCount[r.pixelIndex]++; }
+                    Vec3 directM = sampleDirect(best.pos, n, r.rd, r.seed, true);
+                    if (directM.x>0||directM.y>0||directM.z>0) { pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*directM; contribCount[r.pixelIndex]++; }
                 }
             }
             // Spawn next generation: every surviving ray spawns P children replicating to every pixel index.
@@ -486,19 +540,25 @@ void SoftRenderer::render(const GameState &gs) {
                         }
                         if (!hit) { float t = 0.5f*(rd.y+1.0f); Vec3 bgTop{0.26f,0.30f,0.38f}; Vec3 bgBottom{0.08f,0.10f,0.16f}; Vec3 bg=(1.0f-t)*bgBottom+t*bgTop; col = col + throughput * bg; terminated=true; break; }
                         if (best.mat==1) { Vec3 emit{2.2f,1.4f,0.8f}; emit=emit*config.emissiveIntensity; col = col + throughput * emit; terminated=true; break; }
-                        if (best.mat==0) { 
-                            Vec3 n=best.n; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f}; 
-                            // Direct lighting diffuse with shadow (physically-based attenuation)
-                            if(!shadowOccluded(best.pos + n*0.002f)){
-                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*1.2f; Vec3 direct=emitColor*(ndotl*atten); col = col + throughput * direct; }
+                        if (best.mat==0) {
+                            Vec3 n=best.n; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=n; Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 d=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); ro = best.pos + best.n*0.002f; rd=d; throughput=throughput*Vec3{0.62f,0.64f,0.67f};
+                            // Direct lighting gathered separately. throughput currently encodes diffuse albedo and prior path probability.
+                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
+                            col = col + throughput * direct;
                         }
-                        else if (best.mat==2) { 
-                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*Vec3{0.86f,0.88f,0.94f}; 
-                            if(!shadowOccluded(best.pos + n*0.002f)){
-                                Vec3 L = ballC - best.pos; float dist2=dot(L,L); float invDist=(dist2>1e-6f)?1.0f/std::sqrt(dist2):0.0f; L=L*invDist; float ndotl=std::max(0.0f,dot(n,L)); float atten=1.0f/(4.0f*3.1415926f*std::max(1e-4f,dist2)); Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor=emitColor*config.emissiveIntensity*0.9f; Vec3 direct=emitColor*(ndotl*atten*0.75f); col = col + throughput * direct; }
-                            if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; }}
-                        if (best.mat!=1 && best.mat!=0 && best.mat!=2){}
-                        if (best.mat==0) { if (config.rouletteEnable && bounce >= config.rouletteStartBounce) { float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z))); float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; } }
+                        else if (best.mat==2) {
+                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*Vec3{0.86f,0.88f,0.94f};
+                            // Metallic: throughput carries base F0; direct lighting adds Fresnel-weighted contribution.
+                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, true);
+                            col = col + throughput * direct;
+                        }
+                        if (best.mat!=1 && best.mat!=0 && best.mat!=2) {}
+                        if (best.mat==0 || best.mat==2) {
+                            if (config.rouletteEnable && bounce >= config.rouletteStartBounce) {
+                                // Russian roulette: preserve unbiasedness by scaling throughput by 1/p when surviving
+                                float p=std::max(config.rouletteMinProb,std::max(throughput.x,std::max(throughput.y,throughput.z)));
+                                float rrand=(xorshift(seed)&65535)/65535.0f; if(rrand>p){ bounce++; break;} throughput=throughput/p; }
+                        }
                     }
                     if(!terminated){ Vec3 amb{0.05f,0.055f,0.06f}; col = col + throughput * amb; }
                     totalBounces += bounce; pathsTraced++;
@@ -522,14 +582,14 @@ void SoftRenderer::render(const GameState &gs) {
             float r = accum[(sy*rtW+sx)*3+0];
             float g = accum[(sy*rtW+sx)*3+1];
             float b = accum[(sy*rtW+sx)*3+2];
-            // Apply exposure before tone mapping to avoid overly dark appearance
-            const float exposure = 1.2f; // reduced exposure per user brightness feedback
-            r = 1.0f - std::exp(-r * exposure);
-            g = 1.0f - std::exp(-g * exposure);
-            b = 1.0f - std::exp(-b * exposure);
-            // Gamma correct
-            auto gfun = [](float c){ return std::pow(std::max(0.0f,c), 1.0f/2.2f); };
-            r = gfun(r); g = gfun(g); b = gfun(b);
+            // ACES tone mapping (borrowed from removed segment tracer branch)
+            auto ACESFilm = [](float R, float G, float B){
+                auto f=[&](float x){ float a=2.51f,b=0.03f,c=2.43f,d=0.59f,e=0.14f; float num = x*(a*x + b); float den = x*(c*x + d) + e; float o = (den!=0.0f)? num/den : 0.0f; if(o<0)o=0; if(o>1)o=1; return o; };
+                return std::tuple<float,float,float>(f(R),f(G),f(B));
+            };
+            std::tie(r,g,b) = ACESFilm(r,g,b);
+            // Gamma
+            r = std::pow(r, 1.0f/2.2f); g = std::pow(g, 1.0f/2.2f); b = std::pow(b, 1.0f/2.2f);
             uint8_t R = (uint8_t)std::min(255.0f, r*255.0f + 0.5f);
             uint8_t G = (uint8_t)std::min(255.0f, g*255.0f + 0.5f);
             uint8_t B = (uint8_t)std::min(255.0f, b*255.0f + 0.5f);
