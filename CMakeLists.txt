@@ -73,6 +73,36 @@ if (WIN32)
     )
     target_link_libraries(pong_win PRIVATE user32 gdi32)
     set_target_properties(pong_win PROPERTIES WIN32_EXECUTABLE YES)
+    
+    # Phase 1 Performance Optimizations for path tracer
+    if(MSVC)
+        # MSVC optimization flags
+        target_compile_options(pong_win PRIVATE
+            $<$<CONFIG:Release>:/O2>           # Maximum optimization
+            $<$<CONFIG:Release>:/Oi>           # Enable intrinsic functions
+            $<$<CONFIG:Release>:/GL>           # Whole program optimization
+            $<$<CONFIG:Release>:/fp:fast>      # Fast floating-point model
+            $<$<CONFIG:Release>:/arch:AVX2>    # Enable AVX2 instructions
+            $<$<CONFIG:Release>:/Gy>           # Enable function-level linking
+        )
+        target_link_options(pong_win PRIVATE
+            $<$<CONFIG:Release>:/LTCG>         # Link-time code generation
+            $<$<CONFIG:Release>:/OPT:REF>      # Remove unreferenced functions
+            $<$<CONFIG:Release>:/OPT:ICF>      # Identical COMDAT folding
+        )
+    else()
+        # GCC/Clang optimization flags
+        target_compile_options(pong_win PRIVATE
+            $<$<CONFIG:Release>:-O3>           # Maximum optimization
+            $<$<CONFIG:Release>:-ffast-math>   # Fast math (trade precision for speed)
+            $<$<CONFIG:Release>:-march=native> # Optimize for build machine CPU
+            $<$<CONFIG:Release>:-flto>         # Link-time optimization
+            $<$<CONFIG:Release>:-funroll-loops> # Unroll loops
+        )
+        target_link_options(pong_win PRIVATE
+            $<$<CONFIG:Release>:-flto>         # Link-time optimization
+        )
+    endif()
 endif()
 
 # On Windows enable linking to required system libraries (none external)

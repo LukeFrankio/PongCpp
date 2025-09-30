@@ -113,16 +113,23 @@ private:
     int rtW = 0, rtH = 0;        // internal render resolution
     SRConfig config{};
     BITMAPINFO bmpInfo{};        // top‑down 32bpp DIB header
-    std::vector<float> accum;    // accumulation buffer (RGB float per internal pixel)
-    std::vector<float> history;  // previous frame (for temporal blending)
+    
+    // Phase 2: Structure of Arrays layout for better SIMD performance
+    // Instead of [RGBRGBRGB...], we have separate R[], G[], B[] arrays
+    std::vector<float> accumR, accumG, accumB;  // Accumulation buffers (separate channels)
+    std::vector<float> historyR, historyG, historyB;  // Previous frame (separate channels)
     bool haveHistory = false;
     std::vector<uint32_t> pixel32; // packed BGRA for GDI (A unused)
     unsigned frameCounter = 0;
     SRStats stats_{};              // last frame statistics
+    
+    // Phase 2: Pre-allocated scratch buffers with SoA layout
+    std::vector<float> hdrR, hdrG, hdrB;          // HDR working buffers (separate channels)
+    std::vector<float> denoiseR, denoiseG, denoiseB;  // Temporary for denoise pass (separate channels)
 
     void updateInternalResolution();
     void toneMapAndPack();
-    void temporalAccumulate(const std::vector<float>& cur);
+    void temporalAccumulate(const std::vector<float>& curR, const std::vector<float>& curG, const std::vector<float>& curB);
     void spatialDenoise();
 };
 
