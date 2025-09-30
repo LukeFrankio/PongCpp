@@ -67,7 +67,7 @@ void GameCore::update(double dt) {
         double step = remaining > maxStep ? maxStep : remaining;
         remaining -= step;
         // Update obstacles (Obstacles mode)
-        if (s.mode == GameMode::Obstacles) {
+        if (s.mode == GameMode::Obstacles || s.mode == GameMode::ObstaclesMulti) {
             for (auto &ob : s.obstacles) {
                 ob.x += ob.vx * step;
                 ob.y += ob.vy * step;
@@ -267,7 +267,7 @@ void GameCore::update(double dt) {
         }
 
         // Obstacles collisions (AABB vs ball)
-        if (s.mode == GameMode::Obstacles) {
+        if (s.mode == GameMode::Obstacles || s.mode == GameMode::ObstaclesMulti) {
             for (auto &ob : s.obstacles) {
                 double left = ob.x - ob.w/2.0;
                 double right = ob.x + ob.w/2.0;

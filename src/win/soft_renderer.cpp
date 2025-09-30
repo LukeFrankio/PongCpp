@@ -384,12 +384,17 @@ void SoftRenderer::render(const GameState &gs) {
                     Vec3 direct = sampleDirect(best.pos, n, r.rd, r.seed, false);
                     if (direct.x>0||direct.y>0||direct.z>0) { pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct; contribCount[r.pixelIndex]++; }
                 } else if (best.mat==2) {
+                    // Paddle material: slightly tinted metal with diffuse under-layer
+                    Vec3 paddleColor{0.25f,0.32f,0.6f};
                     Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
                     float rough = config.metallicRoughness; float r1 = 2*3.1415926f*((xorshift(r.seed)&1023)/1024.0f); float r2=(xorshift(r.seed)&1023)/1024.0f; float r2s=std::sqrt(r2);
                     Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w);
                     Vec3 fuzz = norm(u*(std::cos(r1)*r2s) + v*(std::sin(r1)*r2s) + w*std::sqrt(1-r2));
-                    r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f; r.throughput = r.throughput * Vec3{0.86f,0.88f,0.94f};
-                    Vec3 directM = sampleDirect(best.pos, n, r.rd, r.seed, true);
+                    r.rd = norm(r.rd*(1.0f-rough) + fuzz*rough); r.ro = best.pos + r.rd*0.002f;
+                    // mix base fresnel-ish term with paddle color
+                    r.throughput = r.throughput * (Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f);
+                    // Direct lighting for specular highlight
+                    Vec3 directM = sampleDirect(best.pos, n, r.rd, r.seed, true) * paddleColor;
                     if (directM.x>0||directM.y>0||directM.z>0) { pixelAccum[r.pixelIndex]=pixelAccum[r.pixelIndex]+r.throughput*directM; contribCount[r.pixelIndex]++; }
                 }
             }
@@ -547,9 +552,9 @@ void SoftRenderer::render(const GameState &gs) {
                             col = col + throughput * direct;
                         }
                         else if (best.mat==2) {
-                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*Vec3{0.86f,0.88f,0.94f};
-                            // Metallic: throughput carries base F0; direct lighting adds Fresnel-weighted contribution.
-                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, true);
+                            Vec3 paddleColor{0.25f,0.32f,0.6f};
+                            Vec3 n=best.n; float cosi=dot(rd,n); rd = rd - n*(2.0f*cosi); float rough=config.metallicRoughness; float r1=2*3.1415926f*((xorshift(seed)&1023)/1024.0f); float r2=(xorshift(seed)&1023)/1024.0f; float r2s=std::sqrt(r2); Vec3 w=norm(n); Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; Vec3 v=norm(cross(w,a)); Vec3 u=cross(v,w); Vec3 fuzz=norm(u*(std::cos(r1)*r2s)+v*(std::sin(r1)*r2s)+w*std::sqrt(1-r2)); rd=norm(rd*(1.0f-rough)+fuzz*rough); ro=best.pos+rd*0.002f; throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f);
+                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * paddleColor;
                             col = col + throughput * direct;
                         }
                         if (best.mat!=1 && best.mat!=0 && best.mat!=2) {}
