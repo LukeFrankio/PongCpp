@@ -1,129 +1,84 @@
-# PongCpp Documentation
+# Documentation Index
 
-Welcome to the comprehensive documentation for PongCpp, a classic Pong game implementation in C++ with dual frontend support.
+Central index for all non-Doxygen documentation in PongCpp. These docs describe gameplay, configuration, architecture, APIs, and contributor guidance.
 
-## Documentation Overview
+---
 
-This documentation is organized into several sections to serve different audiences and use cases.
+## Sections
 
-### User Documentation
+| Audience | Document | Purpose |
+|----------|----------|---------|
+| Players | [User Guide](user/user-guide.md) | How to run/play, modes, controls, recording, troubleshooting |
+| Developers | [Architecture Guide](developer/architecture.md) | Internal structure, subsystems, data flow, extensibility |
+| Developers | [API Reference](developer/api-reference.md) | Public & semi-public types, functions, settings fields |
+| All | Main README (repo root) | Project overview, quick build & feature summary |
+| Auto-Generated | Doxygen HTML | Full annotated source API (after build) |
 
-**[User Guide](user/user-guide.md)**
-Complete guide for end users covering installation, gameplay, controls, and troubleshooting for both console and Windows GUI versions.
-
-### Developer Documentation
-
-**[Architecture Guide](developer/architecture.md)**
-Technical overview of the codebase architecture, design principles, and implementation details for developers who want to understand or contribute to the project.
-
-**[API Reference](developer/api-reference.md)**
-Quick reference for all public classes, methods, and interfaces in the PongCpp codebase.
-
-### Generated Documentation
-
-**[Doxygen API Documentation](doxygen/html/index.html)**
-Complete API documentation generated from source code comments using Doxygen. Available after running `cmake --build . --target docs`.
+---
 
 ## Quick Start
 
-### For Users
+### Users
 
-1. Download or build the appropriate version for your platform
-2. Console version: Run `pong` or `pong.exe` in a terminal
-3. Windows GUI: Double-click `pong_win.exe`
-4. See the [User Guide](user/user-guide.md) for detailed instructions
+1. Build or download binaries
+2. Run console version (`pong` / `pong.exe`) or GUI (`pong_win.exe`)
+3. Read the [User Guide](user/user-guide.md) for modes, controls & recording
 
-### For Developers
+### Developers
 
-1. Clone the repository and review the [Architecture Guide](developer/architecture.md)
-2. Build the project using CMake: `cmake --build build --config Release`
-3. Explore the source code with the [API Reference](developer/api-reference.md)
-4. Generate Doxygen docs: `cmake -DBUILD_DOCUMENTATION=ON .. && cmake --build . --target docs`
+1. Read [Architecture](developer/architecture.md)
+2. Build project (see root README)
+3. Explore [API Reference](developer/api-reference.md) for integration points
+4. Optionally enable documentation target for Doxygen HTML
 
-## Project Structure
+---
 
-```text
-PongCpp/
-├── src/                    # Source code
-│   ├── core/              # Platform-independent game logic
-│   ├── win/               # Windows GUI implementation
-│   ├── platform*          # Platform abstraction layer
-│   ├── main.cpp           # Console entry point
-│   └── game.*             # Console interface
-├── docs/                  # Documentation
-│   ├── user/              # User guides
-│   ├── developer/         # Technical documentation
-│   └── doxygen/          # Generated API docs (after build)
-├── build/                 # Build output directory
-├── CMakeLists.txt         # Build configuration
-├── Doxyfile              # Doxygen configuration
-└── README.md             # Main project README
-```
+## Feature Snapshot (See root README for full table)
 
-## Key Features
+* Multi-ball & obstacles (combined mode supported)
+* Physics toggle (Arcade vs Physical)
+* Path tracer with soft shadows, metallic shading, accumulation
+* Recording subsystem (fixed-step simulation, FPS selectable)
+* AI vs AI spectator mode
+* Persistent configurable settings + high scores
 
-- **Dual Frontend Support**: Console (text-based) and Windows GUI versions
-- **Cross-Platform**: Console version runs on Windows, Linux, and POSIX systems
-- **No External Dependencies**: Uses only standard library and OS APIs
-- **Modern C++**: Written in C++17 with clean, well-documented code
-- **Realistic Physics**: Advanced ball-paddle collision with spin effects
-- **Configurable AI**: Multiple difficulty levels for the computer opponent
-- **Settings Persistence**: Save preferences and high scores (GUI version)
+---
 
-## Building Documentation
-
-### Prerequisites
-
-- Doxygen (for API documentation generation)
-- CMake 3.10+ (for build system)
-
-### Generate All Documentation
+## Building Docs (Doxygen)
 
 ```bash
-# Configure with documentation enabled
-cmake -DBUILD_DOCUMENTATION=ON -S . -B build
-
-# Build the project and documentation
-cmake --build build --config Release --target docs
-
-# Documentation will be available in docs/doxygen/html/
+cmake -S . -B build -DBUILD_DOCUMENTATION=ON
+cmake --build build --target docs --config Release
+# Open docs/doxygen/html/index.html
 ```
 
-### Documentation Targets
+Targets: `docs`, `clean-docs`.
 
-- `docs`: Generate Doxygen API documentation
-- `clean-docs`: Remove generated documentation files
+---
 
-## Contributing to Documentation
+## Contributing Documentation
 
-We welcome contributions to improve the documentation:
+Guidelines:
 
-1. **User Guides**: Help improve clarity and add missing information
-2. **Technical Docs**: Enhance architecture explanations and add examples  
-3. **API Comments**: Improve Doxygen comments in source code
-4. **Examples**: Add code examples and usage patterns
+* Keep user vs developer scope distinct
+* Document new settings & flags when introduced
+* Update API reference when adding enums / struct fields
+* Provide rationale for non-obvious design choices in architecture doc
 
-### Documentation Standards
+---
 
-- Use clear, concise language
-- Include code examples where helpful
-- Maintain consistent formatting
-- Update all relevant sections when making changes
-- Test documentation examples to ensure they work
+## Support
 
-## Support and Feedback
+Check existing documents, then inspect source (`src/core/game_core.*`) or open an issue (if repository hosting supports it). For rendering questions, see `win/soft_renderer.*` comments.
 
-For questions about using or developing PongCpp:
+---
 
-1. Check the appropriate documentation section first
-2. Review the generated Doxygen documentation for API details
-3. Look at the source code comments for implementation details
-4. Create an issue if you find documentation gaps or errors
+## Versioning
 
-## Version Information
+Documentation is updated continuously; refer to commit history or (if present) `CHANGELOG.md` for chronological feature additions.
 
-This documentation corresponds to PongCpp version 1.0. The documentation is updated with each release to reflect current functionality and API changes.
+---
 
 ## License
 
-The documentation is provided under the same license as the PongCpp project. See the main project files for license details.
+Documentation shares the same license / usage terms as the codebase. Attribution appreciated for derived works.

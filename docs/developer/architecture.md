@@ -1,286 +1,227 @@
-# Developer Documentation
+# Architecture Guide
 
-## Overview
+This document details the internal structure of PongCpp: its core simulation, rendering paths, settings & persistence, AI, and extensibility points. It reflects the current feature set including obstacles + multi-ball combined mode, recording system, path tracer, physics mode toggle, and expanded settings.
 
-PongCpp is designed with a clean, modular architecture that separates platform-specific code from core game logic. This document provides technical details for developers who want to understand, modify, or extend the codebase.
-
-## Architecture
-
-### Core Components
-
-1. **GameCore** (`src/core/`): Platform-independent game simulation
-2. **Platform Layer** (`src/platform*`): Console I/O abstraction  
-3. **Console Frontend** (`src/game.*`, `src/main.cpp`): Text-based interface
-4. **Windows GUI Frontend** (`src/win/`): Win32/GDI graphical interface
-
-### Design Principles
-
-- **Platform Independence**: Core game logic works on any platform
-- **No External Dependencies**: Uses only standard library and OS APIs
-- **Clean Interfaces**: Well-defined boundaries between components
-- **Modern C++**: Uses C++17 features appropriately
-
-## Core Game Logic
-
-### GameCore Class
-
-The `GameCore` class implements all game simulation logic:
-
-```cpp
-class GameCore {
-public:
-    void update(double dt);  // Main physics simulation
-    void reset();            // Reset game state
-    // Player control methods
-    void move_left_by(double dy);
-    void set_left_y(double y);
-    // State access
-    const GameState& state() const;
-};
-```
-
-### Physics Implementation
-
-The physics system uses several advanced techniques:
-
-#### Substepping
-
-- Breaks large timesteps into smaller substeps
-- Prevents tunneling at high velocities
-- Maintains collision accuracy
-
-#### Ball-Paddle Collision
-
-- Uses geometric collision detection
-- Applies realistic physics with velocity transfer
-- Includes spin effects based on contact point
-
-#### AI Behavior
-
-- Simple but effective tracking algorithm
-- Configurable difficulty via speed multiplier
-- Realistic limitations to maintain fun gameplay
-
-## Platform Abstraction
-
-### Platform Interface
-
-```cpp
-struct Platform {
-    virtual bool kbhit() = 0;
-    virtual int getch() = 0;
-    virtual void clear_screen() = 0;
-    virtual void set_cursor_visible(bool visible) = 0;
-    virtual void enable_ansi() = 0;
-};
-```
-
-### Implementations
-
-- **Windows** (`platform_win.cpp`): Uses `_kbhit()`, `_getch()`, Win32 console API
-- **POSIX** (`platform_posix.cpp`): Uses `termios`, `ioctl()`, ANSI escape sequences
-
-## Build System
-
-### CMake Configuration
-
-The project uses CMake with separate targets:
-
-```cmake
-# Console version (cross-platform)
-add_executable(pong src/main.cpp src/game.cpp ...)
-
-# Windows GUI version (Windows only)
-if (WIN32)
-    add_executable(pong_win src/win/main_win.cpp ...)
-    target_link_libraries(pong_win PRIVATE user32 gdi32)
-endif()
-```
-
-### Build Process
-
-1. **Configure**: `cmake -S . -B build`
-2. **Build**: `cmake --build build --config Release`
-3. **Output**: `build/pong` and `build/pong_win.exe` (Windows)
-
-## Windows GUI Implementation
-
-### Win32 Window Management
-
-The Windows GUI uses native Win32 APIs:
-
-- Window class registration and message handling
-- DPI awareness for high-resolution displays
-- GDI rendering for smooth graphics
-- Context menus for configuration
-
-### Key Features
-
-#### DPI Awareness
-
-```cpp
-// Enables per-monitor DPI awareness
-SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-```
-
-#### Settings Persistence
-
-- JSON format for human readability
-- Custom parser to avoid external dependencies
-- Automatic loading/saving
-
-#### High Score System
-
-- Persistent storage in JSON format
-- Automatic sorting and trimming
-- Name entry dialog for new high scores
-
-## Adding New Features
-
-### Adding a New Control Mode
-
-1. Extend `Settings` structure:
-
-```cpp
-struct Settings {
-    int control_mode = 0;  // Add new mode value
-    // ...
-};
-```
-
-1. Update settings UI and persistence
-1. Implement control logic in input processing
-
-### Adding New Platforms
-
-1. Create new platform implementation:
-
-```cpp
-// src/platform_newos.cpp
-class NewOSPlatform : public Platform {
-    // Implement all virtual methods
-};
-```
-
-1. Update factory function in `platform.h`
-1. Add platform detection in build system
-
-### Extending Physics
-
-The physics system is contained in `GameCore::update()`:
-
-1. Modify collision detection algorithms
-2. Add new physics parameters to `GameCore` private members
-3. Update reset logic for new parameters
-
-## Testing and Debugging
-
-### Console Version Testing
-
-- Easier to debug with text output
-- Cross-platform testing
-- Log messages to console
-
-### Windows GUI Testing
-
-- Use console version to verify core logic
-- Test DPI scaling on different displays
-- Verify settings persistence
-
-### Performance Considerations
-
-- Game targets 60 FPS
-- Physics substepping maintains accuracy
-- GDI rendering is efficient for this simple game
-
-## Code Style and Standards
-
-### C++ Guidelines
-
-- Use C++17 features appropriately
-- RAII for resource management
-- const-correctness throughout
-- Clear, descriptive naming
-
-### Documentation
-
-- Doxygen comments for all public APIs
-- Clear function and class descriptions
-- Parameter and return value documentation
-
-### Error Handling
-
-- Check return values from OS APIs
-- Graceful degradation when possible
-- Clear error messages for users
-
-## File Organization
+## 1. High-Level Overview
 
 ```text
-src/
-├── core/           # Game logic (platform-independent)
-├── platform*       # Platform abstraction implementations  
-├── main.cpp        # Console entry point
-├── game.*          # Console interface
-└── win/            # Windows GUI implementation
-    ├── main_win.cpp    # Windows entry point
-    ├── game_win.*      # Main GUI implementation
-    ├── settings.*      # Settings persistence
-    └── highscores.*    # High score management
+      +------------------+
+      |   Frontends      |
+      |------------------|
+      | Console (ASCII)  |
+      | Windows GUI      |
+      +---------+--------+
+            |
+        (calls API)
+            v
+      +------------------+
+      |    GameCore      |
+      |------------------|
+      | Physics / Modes  |
+      | AI (Left/Right)  |
+      | Obstacles        |
+      | Multi-ball       |
+      +---------+--------+
+            |
+            v
+      +------------------+
+      |  Shared State    |
+      |  (GameState)     |
+      +------------------+
+            |
+    +-----------+------------+
+    v                        v
+  +-----------+           +--------------+
+  | Rendering |           | Persistence  |
+  | Classic   |           | settings.json|
+  | PathTrace |           | highscores   |
+  +-----------+           +--------------+
 ```
 
-## Memory Management
+Frontends own a `GameCore` instance, drive `update(dt)`, and render a view of `GameState`. The Windows GUI enriches presentation via HUD layers and either the classic GDI renderer or the experimental software path tracer.
 
-- Stack allocation for game objects
-- RAII for platform resources (console settings, etc.)
-- No manual memory management required
-- Standard containers for dynamic data
+## 2. Core Components
 
-## Threading Model
+| Component | Responsibility |
+|-----------|----------------|
+| `GameCore` | Physics simulation, scoring, AI steering, mode orchestration |
+| `GameState` | Data container for paddles, balls, scores, obstacles, dimensions, mode |
+| Platform Layer | Abstracted console I/O (blocking-free keyboard, ANSI control) |
+| Console Frontend | Terminal rendering & input mapping to `GameCore` |
+| Windows GUI Frontend | Window lifecycle, menus, input routing, renderer integration, persistence |
+| Path Tracer (`SoftRenderer`) | CPU ray/path sampling, accumulation, shading, upscaling |
+| Settings Manager | Load/save user-configurable options & rewrite defaults when missing fields |
+| High Scores Store | Ordered insertion + trimming of persistent scoreboard |
 
-- Single-threaded design
-- All operations on main thread
-- Timer-based game loop
-- No synchronization required
+Legacy console root files remain for backward compatibility; newer console code lives under `src/console/` with clearer separation.
 
-## Future Enhancement Ideas
+## 3. Design Principles
 
-### Gameplay Features
+* **Zero external runtime deps** – only standard library + OS APIs
+* **Deterministic core** – simulation independent of frame pacing (frontends may record at fixed step)
+* **Progressive enhancement** – advanced features (path tracer, recording) layer on top, not embedded in physics logic
+* **Strict separation** – `GameCore` unaware of rendering or OS concerns
+* **Data-oriented state** – `GameState` is a plain struct; accessible for serialization or replay extension
+* **Safety via clamping** – All persisted settings clamped on load to avoid invalid renderer or physics configurations
 
-- Multiple game modes (different ball speeds, paddle sizes)
-- Power-ups and special effects
-- Network multiplayer support
-- Tournament mode with brackets
+## 4. GameCore Details
 
-### Technical Improvements
+Primary responsibilities:
 
-- Graphics backend abstraction (OpenGL, DirectX)
-- Audio system with sound effects
-- Plugin architecture for game modes
-- Configuration file format validation
+* Integrate ball(s) & obstacle movement
+* Resolve collisions (paddle, walls, obstacles)
+* Apply paddle spin & velocity influence
+* Dispatch scoring & reset events
+* Update AI-controlled paddles (left/right based on player mode)
 
-### Platform Support
+### Multi-Ball
 
-- macOS support via Cocoa APIs
-- Mobile platforms (iOS, Android)
-- Web assembly port
-- Game controller support
+`std::vector<BallState>` holds dynamic balls; index 0 is mirrored to legacy `ball_x/ball_y` values for compatibility with renderers expecting a primary ball. New balls spawn with randomized angle & speed scaling.
 
-## Building Documentation
+### Obstacles & Combined Mode
 
-### Doxygen Setup
+`std::vector<Obstacle>` updated when mode is Obstacles or ObstaclesMulti. Collision logic reflects velocity across obstacle AABB normals with slight penetration correction.
 
-```bash
-# Generate documentation
-doxygen Doxyfile
+### Physics Modes
 
-# Output in docs/doxygen/html/
-```
+* Arcade: simplified restitution & tangent impulse (slightly energizing)
+* Physical: closer to elastic bounce; energy drift minimized; paddle influence separated into normal vs tangential components.
 
-### Documentation Files
+### AI System
 
-- API documentation generated from source comments
-- User guides in `docs/user/`
-- Developer documentation in `docs/developer/`
+Two enable flags (`left_ai_enabled`, `right_ai_enabled`) set by player mode selection. Each AI paddle tracks a target Y (or X for horizontal paddles) using a speed multiplier derived from difficulty.
 
-This architecture provides a solid foundation for a cross-platform game while maintaining simplicity and avoiding external dependencies.
+### Sub-Stepping
+
+Large `dt` split into fixed micro-steps (e.g., 240 Hz equivalent) to prevent tunneling and preserve consistent collision ordering across variable frame rates or recording modes.
+
+### Collision Outline
+
+1. Integrate position
+2. Check wall bounds (invert velocity)
+3. Test paddle volumes (vertical & optional horizontal paddles)
+4. Apply paddle transfer: normal reflection, tangent offset spin, velocity injection
+5. Obstacles (branch if mode supports)
+6. Score detection (ball passes side) → increment score & reset ball/paddles
+
+### Scoring & Reset
+
+State resets minimally: scores persist, ball(s) maybe respawned. Multi-ball modes can respawn all or maintain distribution depending on current internal logic.
+
+### Extending Modes
+
+Add enum value to `GameMode`; gate new behavior in update loops; ensure renderers respect visibility (e.g., surfaces or overlays) and persistence adjusts store if needed.
+
+## 5. Platform Abstraction (Console)
+
+`Platform` interface standardizes minimal console needs: char input detection, raw getch, cursor visibility, ANSI enable, screen clear. Backends:
+
+* Windows: `_kbhit`, `_getch`, Win32 console functions
+* POSIX: termios configuration + non-blocking reads & ANSI sequences
+
+Console frontend loops: poll input → map to paddle commands → call `update(dt)` → re-render ASCII frame.
+
+## 6. Windows GUI Architecture
+
+### Layers
+
+| Layer | Role |
+|-------|------|
+| Window / Message Loop | Translate Win32 messages to app events |
+| Input Router | Consolidate mouse + keyboard into abstract paddle commands |
+| UI (Menus / Panels) | Settings, high scores, modal name entry |
+| Rendering Adapter | Chooses Classic vs Path Tracer; composites HUD |
+| Persistence | Loads settings/high scores at startup; saves on change or shutdown |
+| Recording | Adjusts simulation step cadence & overlays recording stats |
+
+### HUD & Panels
+
+HUD draws scores & stats; recording panel separated to allow independent visibility toggles (play vs record contexts).
+
+### DPI Awareness
+
+Process-level Per Monitor V2 ensures crisp scaling; sizes computed respecting DPI for layout fidelity.
+
+## 7. Path Tracer Overview (`SoftRenderer`)
+
+| Subsystem | Function |
+|-----------|----------|
+| Ray Generation | Orthographic (default) or perspective rays per pixel (budget-based or fixed spp) |
+| Shading | Metallic paddles w/ roughness, diffuse walls, emissive ball area light sampling |
+| Bounces | Up to N bounces; optional Russian roulette from configurable depth |
+| Accumulation | Exponential moving average (temporal) + optional 3x3 spatial blend |
+| Soft Shadows | Multiple samples over scaled light radius approximating area emission |
+| Fan-Out Mode | Experimental exponential branching (guarded by cap + abort) |
+
+Statistics (ms timings, spp, total rays, average bounce depth) exposed for HUD.
+
+State invalidations (resize / parameter change) reset accumulation history.
+
+## 8. Persistence Layer
+
+`settings.json` & `highscores.json` created next to executables. Loading process:
+
+1. Read file (if missing → defaults)
+2. Parse minimal JSON (flat key/value)
+3. For each known field: if parse succeeds, clamp range; else keep default
+4. Unknown fields ignored (forward compatibility)
+
+Saving always writes a complete canonical set of known fields (stable keys, stable order not guaranteed but typically consistent).
+
+High scores: load vector, append candidate, sort descending, truncate (top N), save.
+
+## 9. Recording System
+
+When enabled: simulation decouples from wall-clock; each frame advances by fixed `1/recording_fps`. Renderer continues to display frames as fast as produced; timing overlay shows simulated time progression.
+
+Potential extensions: frame dump callbacks, video writer integration, deterministic random seed capture for re-simulation.
+
+## 10. Extensibility Patterns
+
+| Goal | Pattern |
+|------|---------|
+| New Game Mode | Extend `GameMode` enum + branch in update loops & UI cycle logic |
+| New Renderer | Implement adapter with `render(GameState&)` + integrate menu toggle |
+| New Setting | Add field → clamp/load/save in persistence → expose in UI → use in subsystem |
+| Replay System | Serialize `GameState` deltas or input events each frame |
+| Online Multiplayer | Replace direct paddle control with network inputs; preserve deterministic step |
+
+## 11. Testing Strategy
+
+No automated tests currently; practical workflow:
+
+1. Validate logic via console build (fast iteration)
+2. Stress multi-ball + obstacles combined mode
+3. Check AI vs AI for stability over long runs
+4. Toggle physics modes and ensure expected spin/energy characteristics
+5. Path tracer smoke test: change roughness/emissive & verify accumulation resets
+
+## 12. Performance Considerations
+
+* Small code footprint keeps instruction cache favorable
+* Avoids heap churn in hot loops (vectors pre-sized or reserve where needed)
+* Path tracer budgets rays to maintain interactivity; fan-out guarded by hard cap
+* Sub-stepping avoids expensive corrective collision rewinds
+
+## 13. Code Style
+
+* C++17, RAII, explicit intent
+* `const` where possible, pass by reference for heavy structs
+* Minimal macros, prefer inline helpers or lambdas
+* Doxygen comments for public headers (core, renderer, persistence)
+
+## 14. Future Directions (Ideas)
+
+| Area | Enhancement |
+|------|-------------|
+| Rendering | SSE/AVX acceleration, GPU backend, spectral emissive, MIS |
+| Gameplay | Power-ups, paddle deformation, tournament ladder |
+| Tooling | Replay capture & deterministic playback, scripting API |
+| Networking | Lockstep or rollback netcode prototype |
+| Export | Automatic frame dump for recording mode |
+
+## 15. Summary
+
+PongCpp balances clarity and experimentation: a clean, deterministic simulation core with optional advanced rendering and extended modes. The modular approach allows adding features without entangling core physics or bloating dependencies.
+
+Contributions that preserve clarity and separation are encouraged.

@@ -1,292 +1,231 @@
 # PongCpp User Guide
 
-Welcome to PongCpp! This guide will help you understand and play both versions of the game.
+Welcome! This guide explains how to install, configure, and enjoy PongCpp across its console and Windows GUI frontends, including advanced modes, rendering, recording, and physics options.
 
-## Table of Contents
+---
 
-1. [Getting Started](#getting-started)
-2. [Console Version](#console-version)  
-3. [Windows GUI Version](#windows-gui-version)
-4. [Game Rules](#game-rules)
-5. [Controls](#controls)
-6. [Configuration](#configuration)
-7. [Troubleshooting](#troubleshooting)
+## 1. Editions
 
-## Overview
+| Edition | Binary | Description |
+|---------|--------|-------------|
+| Console | `pong` / `pong.exe` | Cross‑platform ASCII version (lightweight, debug friendly) |
+| Windows GUI | `pong_win.exe` | Win32 windowed version with menus, path tracer, persistence, recording |
 
-PongCpp comes in two versions:
+Both share the same core simulation (`GameCore`).
 
-- **Console Version** (`pong.exe`): Text-based version that runs in any terminal
-- **Windows GUI Version** (`pong_win.exe`): Graphical version with mouse support and settings
+---
 
-### System Requirements
+## 2. System Requirements
 
-**Console Version:**
+| Component | Console | Windows GUI |
+|-----------|---------|-------------|
+| OS | Windows / Linux / POSIX | Windows 7+ (DPI aware) |
+| CPU | Any C++17-capable | Multi-core recommended for path tracing |
+| RAM | < 10 MB | < 50 MB (with path tracer) |
+| Disk | < 5 MB | < 5 MB + JSON settings/scores |
 
-- Any Windows, Linux, or POSIX-compatible system
-- Terminal/console window
-- Keyboard for input
+Path tracer performance scales strongly with core count; start with lower rays if unsure.
 
-**Windows GUI Version:**
+---
 
-- Windows 7 or later
-- Mouse and/or keyboard
-- ~5MB free disk space for settings and high scores
+## 3. Quick Start
 
-## Console Version
+### Console (Quick Start)
 
-The console version displays the game using ASCII characters in your terminal window.
+```bash
+./pong            # Linux / POSIX
+pong.exe          # Windows
+```
 
-### Starting the Game
+### Windows GUI
 
-1. Open a command prompt or terminal
-2. Navigate to the directory containing `pong.exe`
-3. Run: `pong.exe` (Windows) or `./pong` (Linux)
+```text
+double‑click pong_win.exe
+```
 
-### Gameplay
+Right‑click in the window to open the main menu / settings panel.
 
-- The game field is displayed using ASCII characters
-- Your paddle is on the left side (represented by `|` characters)
-- The AI opponent is on the right side
-- The ball bounces between paddles and walls
-- Score is displayed at the top
+---
 
-### Console Controls
+## 4. Game Modes
 
-| Key | Action |
-|-----|--------|
-| W   | Move paddle up |
-| S   | Move paddle down |
-| Q   | Quit game |
+| Key | Mode | Description |
+|-----|------|-------------|
+| 1 | Classic | Standard vertical paddles |
+| 2 | ThreeEnemies | Adds top + bottom horizontal AI paddles |
+| 3 | Obstacles | Moving central obstacle bricks (AABB) |
+| 4 | MultiBall | Multiple simultaneous balls |
+| 5 | ObstaclesMulti | Obstacles + MultiBall combined |
 
-**Note:** The console version also supports arrow keys for the right paddle (for testing purposes).
+Mode switching is immediate; multi-ball spawns additional balls (existing score preserved).
 
-## Windows GUI Version
+---
 
-The Windows GUI version provides a modern graphical interface with additional features.
+## 5. Player / AI Modes
 
-### Getting Started
+Configured via settings / menu:
 
-Choose the version that best fits your system and preferences:
+| Player Mode | Left Paddle | Right Paddle |
+|-------------|-------------|--------------|
+| 1P vs AI | Human | AI |
+| 2P Local | Human | Human |
+| AI vs AI | AI | AI |
 
-### Console Version (`pong` or `pong.exe`)
+AI difficulty (Easy / Normal / Hard) adjusts reaction speed & tracking aggressiveness.
 
-The console version runs in any terminal and is perfect for:
+---
 
-- Systems without GUI support
-- Remote/SSH sessions  
-- Minimal resource usage
-- Cross-platform compatibility
+## 6. Physics Modes
 
-### Windows GUI Version (`pong_win.exe`)
+| Mode | Behavior |
+|------|----------|
+| Arcade | Livelier legacy style, slight energy gain keeps tempo high |
+| Physical | Near-elastic response; tangent spin + paddle velocity transfer tuned for control |
 
-The GUI version provides enhanced features:
+Switch affects paddle-ball collision math only (not wall/obstacle reflections).
 
-- Smooth graphics and animations
-- Mouse control support
-- Settings persistence
-- High score tracking
-- Configuration menus
+---
 
-## Windows GUI — Quick Start
+## 7. Controls
 
-1. Double-click `pong_win.exe` or run it from the command line
-2. The game window will open and display the main game area
-3. The game starts immediately
-
-### Features
-
-- **Smooth Graphics**: Real-time rendering using Windows GDI
-- **Multiple Control Modes**: Keyboard or mouse input
-- **Settings Persistence**: Your preferences are saved automatically
-- **High Scores**: Track your best games with player names
-- **DPI Awareness**: Scales properly on high-resolution displays
-
-### Visual Elements
-
-- **Game Field**: Dark background with white borders
-- **Paddles**: White rectangular paddles on left and right
-- **Ball**: White circular ball that bounces realistically
-- **Score Display**: Current score shown at the top
-- **Status**: Control mode and AI difficulty shown in title bar
-
-## Game Rules
-
-### Objective
-
-Score points by getting the ball past your opponent's paddle.
-
-### Scoring
-
-- You score when the ball passes the AI paddle (right side)
-- The AI scores when the ball passes your paddle (left side)
-- Games typically play to 10 or 15 points (no automatic limit)
-
-### Physics
-
-- The ball bounces off top and bottom walls
-- Ball speed increases slightly with each paddle hit
-- Paddle movement affects ball direction and spin
-- Ball contact point on paddle influences bounce angle
-
-### AI Behavior
-
-- The AI tracks the ball position
-- AI difficulty affects reaction speed and accuracy
-- Easy: Slower reactions, occasional misses
-- Normal: Good tracking with realistic limitations
-- Hard: Fast reactions, nearly perfect play
-
-## Controls
-
-### Console Version Controls
+### Console
 
 | Key | Action |
 |-----|--------|
-| W   | Move paddle up |
-| S   | Move paddle down |
-| Q   | Quit game |
+| W / S | Move left paddle |
+| 1–5 | Change game mode |
+| Q | Quit |
 
-### Windows GUI Controls
+Right paddle arrow keys still work (debug / second player test).
 
-#### Keyboard Mode
+### Windows GUI – Keyboard Mode
 
 | Key | Action |
 |-----|--------|
-| W   | Move paddle up |
-| S   | Move paddle down |
-| ESC | Exit game |
-| Right-click | Open settings menu |
+| W / S | Move paddle |
+| ESC | Exit application |
+| Right‑click | Open menu / settings |
 
-#### Mouse Mode
+### Windows GUI – Mouse Mode
 
-| Action | Control |
-|--------|---------|
-| Mouse movement | Control paddle position |
-| ESC | Exit game |
-| Right-click | Open settings menu |
+| Action | Result |
+|--------|--------|
+| Move mouse vertically | Paddle follows cursor (locked horizontally) |
+| ESC | Exit |
+| Right‑click | Menu / settings |
 
-## Configuration
+---
 
-### Windows GUI Settings
+## 8. Rendering Options (GUI)
 
-The Windows version allows you to configure:
+| Renderer | Use Case |
+|----------|----------|
+| Classic (GDI) | Maximum FPS, low noise, baseline play |
+| Path Tracer | Visual experiment: soft shadows, emissive bounce, metallic paddles |
 
-1. **Control Mode**
-   - Keyboard: Use W/S keys
-   - Mouse: Mouse cursor controls paddle
+Key path tracer parameters (all persisted): Rays/frame, Max bounces, Internal resolution %, Roughness, Emissive %, Accum (temporal), Denoise strength, Force rays-per-pixel, Ortho toggle, Soft-shadow samples, Light radius %, PBR enable, Roulette controls, Fan-out controls.
 
-2. **AI Difficulty**
-   - Easy: AI is slower and less accurate
-   - Normal: Balanced gameplay
-   - Hard: AI is fast and precise
+If image becomes very noisy: lower roughness, increase rays, or disable fan-out.
 
-### Accessing Settings
+---
 
-1. Right-click anywhere in the game window
-2. Select "Settings" from the context menu
-3. Choose your preferred control mode and AI difficulty
-4. Click "OK" to apply changes
+## 9. Recording
 
-Settings are automatically saved to `settings.json` in the same directory as the game.
+Enable recording mode to run simulation at a fixed target FPS (15–60). This produces consistent temporal sampling for frame capture tools. While recording:
 
-### High Scores
+* Overlay panel shows: frame count, simulated time, target FPS
+* Optionally hide normal HUD or recording overlay (two toggles)
+* Game continues deterministic stepping independent of display refresh
 
-The Windows version tracks high scores automatically:
+Recording currently writes frames only if you integrate an external capturer (no built-in file export yet) – the mode ensures temporal stability.
 
-- Scores are saved when you achieve a new personal best
-- You'll be prompted to enter your name for high scores
-- High scores are saved to `highscores.json`
-- View high scores through the right-click menu
+---
 
-## Troubleshooting
+## 10. HUD Elements
 
-### Console Version Issues
+| Element | Meaning |
+|---------|---------|
+| Score | Player vs opponent tally |
+| Mode | Current game mode shorthand |
+| Phys | Physics mode (Arc/Phys) |
+| PT Stats | When path tracer active: rays, ms timings, internal resolution |
+| Rec Panel | (If recording) frame/time/FPS box |
 
-**Game doesn't respond to keys:**
+Visibility: `hud_show_play`, `hud_show_record` (settings) govern display contexts.
 
-- Make sure the terminal window has focus
-- Try pressing keys more deliberately
-- On some systems, try Ctrl+C to exit if stuck
+---
 
-**Display looks garbled:**
+## 11. Persistence Files
 
-- Try resizing your terminal window
-- Ensure your terminal supports ANSI escape sequences
-- Try a different terminal program
+Created beside the executable:
 
-**Build issues:**
+| File | Purpose |
+|------|---------|
+| settings.json | All adjustable options & last selected mode/renderer |
+| highscores.json | Sorted high score table (trimmed) |
 
-- Make sure you have CMake 3.10+ installed
-- For Windows, use Visual Studio or MSVC compiler
-- For Linux, ensure g++ or clang++ supports C++17
+You may edit manually; game clamps & validates ranges on load.
 
-### Windows GUI Issues
+---
 
-**Window appears blank or unresponsive:**
+## 12. High Scores
 
-- Try running the console version to check for error messages
-- Update your graphics drivers
-- Try running as administrator
+Triggered when a new score exceeds the lowest stored entry. Enter a name (GUI). Table retains top N (commonly 10). Removal or editing can be done by modifying `highscores.json` while the game is closed.
 
-**High DPI display problems:**
+---
 
-- The game should automatically handle DPI scaling
-- If text appears blurry, check Windows display scaling settings
-- Try running in compatibility mode for older Windows versions
+## 13. Performance Tips
 
-**Settings not saving:**
+| Goal | Recommendation |
+|------|----------------|
+| Higher FPS (PT) | Lower rays, reduce internal scale, fewer bounces |
+| Faster convergence | Increase rays first, then reduce roughness |
+| Stable image | Raise accum alpha (lower temporal blending %) |
+| Sharper w/ less blur | Lower denoise strength |
+| Prevent runaway fan-out | Keep cap moderate (default 2M) |
 
-- Check that the game directory is writable
-- Look for `settings.json` and `highscores.json` files
-- Try running as administrator if needed
+Console version is ideal for verifying logic changes quickly.
 
-**Performance issues:**
+---
 
-- Close other applications to free up system resources
-- The game is lightweight and should run on most systems
-- Try adjusting Windows visual effects settings
+## 14. Troubleshooting
 
-### General Issues
+| Symptom | Fix |
+|---------|-----|
+| Obstacles not moving in combined mode | Ensure mode = ObstaclesMulti (5) |
+| Path tracer extremely slow | Disable fan-out; lower rays & bounces |
+| Blank GUI window | Run console build to inspect runtime messages |
+| Settings ignored | Delete `settings.json` (will regenerate defaults) |
+| High scores not saving | Check directory write permissions |
+| Excessive noise | Increase rays or enable denoise; lower roughness |
 
-**Game runs too fast or slow:**
+### Console Specific
 
-- The game uses real-time physics with automatic frame timing
-- Very old or very new systems might need different timing
-- Try closing other applications
+Misaligned ASCII: Use a monospace font & 80x24 (or larger) terminal. If input lag occurs in POSIX terminals, ensure raw mode is supported.
 
-**Controls feel unresponsive:**
+### Windows Specific
 
-- Ensure the game window has focus
-- Try switching between keyboard and mouse modes (GUI version)
-- Check that no other applications are capturing input
+Blurry scaling: Adjust Windows display scaling (app is DPI aware). If the window freezes, verify no external overlay tools are interfering.
 
-## Getting Help
+---
 
-If you continue to experience issues:
+## 15. Advanced Notes
 
-1. Check the console version first - it often provides error messages
-2. Ensure you have the latest Visual C++ redistributables (Windows)
-3. Try running the game from a command prompt to see error output
-4. Check that antivirus software isn't blocking the game
+* Physics sub-stepping prevents tunneling at higher speeds.
+* Paddle influence blends center offset + paddle velocity.
+* Multi-ball shares scoring; removing balls (future) can be added safely – state vector supports dynamic length.
+* Obstacles employ AABB vs circle collision with velocity reflection & slight positional pushback.
 
-## Advanced Usage
+---
 
-### Command Line Options
+## 16. Manual Editing of Settings
 
-Currently, the games don't accept command line parameters, but you can:
+The game auto-saves after menu changes. Editing JSON while running is not recommended (changes cached in memory). Ranges are clamped on load to prevent instability.
 
-- Run multiple instances for testing
-- Use different directories for separate configurations
-- Create shortcuts with specific working directories
+---
 
-### File Locations
+## 17. Getting Help
 
-**Settings file:** `settings.json` (same directory as executable)
-**High scores:** `highscores.json` (same directory as executable)
+Open an issue (if hosted) or inspect core source (`src/core/game_core.*`) for authoritative logic. The console frontend remains the fastest path to debug behavior.
 
-These files use human-readable JSON format and can be edited manually if needed.
-
-### Building from Source
-
-See the main README.md for complete build instructions. The game can be compiled on Windows, Linux, and other POSIX-compatible systems.
+Enjoy the game – experiment with AI vs AI and path tracer tuning!

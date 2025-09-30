@@ -1,298 +1,242 @@
 # PongCpp
 
-A classic Pong game implementation in C++ with dual frontend support: console and Windows GUI versions.
+Modern, extensible C++ Pong with dual frontends (console + Windows GUI), multiple game modes (including combined Obstacles + MultiBall), an experimental CPU path tracer, configurable physics (arcade vs physically-based), AI vs AI simulation, recording system, and persistent settings/high scores – all with zero external runtime dependencies.
 
-## Features
+## Highlights
 
-### Console Version (Cross-platform)
+| Area | Capabilities |
+|------|--------------|
+| Frontends | Cross-platform console (ASCII) + Windows GUI (Win32/GDI) |
+| Game Modes | Classic, ThreeEnemies, Obstacles, MultiBall, ObstaclesMulti (obstacles + multiball) |
+| Players / AI | 1P vs AI, 2P local, AI vs AI (spectator / benchmark) |
+| Physics | Arcade (legacy) or physically-based paddle bounce & spin transfer |
+| Rendering | Classic GDI or CPU software path tracer with soft shadows & PBR-ish shading |
+| Recording | Fixed-step off-line style capture at selectable FPS (15–60) with HUD visibility toggles |
+| Persistence | `settings.json`, `highscores.json` (auto load/save) |
+| Customization | Extensive path tracer controls (rays, bounces, roughness, emissive, accumulation, denoise, roulette, fan-out) |
+| Obstacles | Moving AABB blocks (with combined multi-ball mode) |
+| Performance | Clean C++17, no dependencies, builds in seconds |
 
-- Text-based ASCII rendering
-- Cross-platform support (Windows/Linux/POSIX)
-- Keyboard controls (W/S keys and arrow keys)
-- Simple AI opponent
-- Multiple game modes (press 1-4 during play):
-  - 1 Classic: Standard two-paddle Pong
-  - 2 Three Enemies: Extra top & bottom AI paddles reflect balls
-  - 3 Obstacles: Moving blocker bricks in arena center
-  - 4 MultiBall: Several balls active simultaneously
+## Feature Overview
+
+### Console Version (Cross‑platform)
+
+* Pure ASCII rendering (portable)
+* Works on Windows, Linux, POSIX terminals
+* Keyboard controls (W/S primary, arrows for testing)
+* Mode switching via number keys (1–5 including combined mode if enabled)
+* Minimal build footprint – great for quick logic debugging
 
 ### Windows GUI Version
 
-- Native Win32/GDI windowed interface
+* Native Win32 window (no frameworks)
+* DPI aware (Per‑Monitor V2)
+* Context / main menu with live settings changes
+* High score name entry + persistence
+* Recording overlay & separate play HUD (individually toggleable)
 
-### Advanced Rendering Options (Windows GUI)
-
-The Windows GUI version includes multiple rendering modes:
+### Rendering Paths
 
 #### Classic GDI Renderer
 
-- Fast, traditional 2D graphics using Windows GDI
-- Crisp, pixel-perfect rendering suitable for all systems
-- Minimal CPU usage and excellent performance
+Fast, deterministic, low CPU – ideal for gameplay focus or older hardware.
 
-#### Software Path Tracer (Experimental)
+#### Software Path Tracer (Experimental / Evolving)
 
-- Pure CPU-based ray tracing renderer for realistic lighting effects
-- Configurable parameters for quality vs performance trade-offs
-- Creates soft, glowing aesthetic with realistic reflections and lighting
+CPU-only physically inspired renderer with:
 
-**Path Tracer Configuration:**
+* Area-light style soft shadows (configurable samples & light radius)
+* Metallic paddle shading with roughness and simple Fresnel
+* Emissive balls (bounce lighting) with adjustable intensity
+* Temporal accumulation + 3x3 spatial denoise
+* Russian roulette termination & optional combinatorial fan‑out (safety caps)
+* Orthographic or perspective projection
 
-- **Rays per Frame**: Controls rendering quality (higher = less noise, more CPU time)
-- **Max Bounces**: Light bounce depth (more bounces = more realistic lighting)
-- **Internal Resolution**: Rendering scale (lower = faster, higher = sharper)
-- **Material Properties**: Metallic roughness, emissive intensity
-- **Post-Processing**: Temporal accumulation, spatial denoising
+Tuning parameters (UI backed / persisted): rays per frame, max bounces, internal resolution %, roughness, emissive %, accumulation alpha, denoise strength, force rays-per-pixel, ortho toggle, soft shadow samples, light radius scale, PBR enable, roulette enable/start/min probability, fan-out enable/cap/abort.
 
-**Performance Notes:**
+### Game Modes
 
-- Path tracer is CPU-intensive and intended for modern multi-core processors
-- Start with lower settings and adjust based on your system's performance
-- Classic renderer is recommended for older systems or when maximum frame rate is desired
+| Mode | Description |
+|------|-------------|
+| Classic | Standard two vertical paddles |
+| ThreeEnemies | Adds autonomous top & bottom horizontal paddles |
+| Obstacles | Moving center-field obstacle bricks (AABB) |
+| MultiBall | Multiple simultaneous balls (chaos) |
+| ObstaclesMulti | Obstacles + MultiBall combined (movement & collision active) |
 
-- DPI awareness for high-resolution displays
-- Multiple control modes:
-  - **Keyboard**: W/S keys for paddle control
-  - **Mouse**: Click and drag or move mouse to control paddle
-- Configurable AI difficulty (Easy/Normal/Hard)
-- High score persistence with player names
-- Settings persistence (control mode, AI difficulty)
-- Real-time physics with ball spin and paddle velocity transfer
+### Player / AI Configurations (Player Mode)
 
-## Technical Details
+* 1P vs AI (default)
+* 2P local (left vs right human – disables right AI)
+* AI vs AI (spectator / stress test – both paddles AI)
 
-- **Language**: C++17
-- **Build System**: CMake 3.10+ (prefers 3.20+)
-- **Dependencies**: None (uses only standard library and platform APIs)
-- **Platforms**: Windows (full support), Linux/POSIX (console only)
-- **Architecture**: Shared game core with platform-specific frontends
+### Physics Modes
 
-## Build Instructions
+* Arcade: Original “lively” bounce with simplified energy handling
+* Physical: More consistent near-elastic response with velocity & tangent injection producing controlled spin
 
-### Prerequisites
+### Recording System
 
-**Windows:**
+* Deterministic fixed-step simulation at selected recording FPS (15–60)
+* Separate recording status panel (frames elapsed, time, target FPS)
+* Optionally hide play HUD and/or recording overlay via settings
 
-- Visual Studio with C++ support OR CMake + C++ toolchain
-- CMake 3.20+ (recommended)
+### HUD & Overlays
 
-**Linux/POSIX:**
+* Score, mode, physics flag, renderer stats (when path tracing)
+* Toggle visibility independently for normal play vs recording
 
-- g++ or clang++ with C++17 support
-- CMake 3.10+
+### Persistence (Settings Fields)
 
-### Building on Windows
+Stored in `settings.json` next to the executable (excerpt – fields evolve):
 
-The batch script now automatically selects 64‑bit (x64) for Visual Studio generators. Pass `Win32` (or `x86`) explicitly as the third argument to force a 32‑bit build.
-
-```powershell
-# Clean build (removes build directory)
-.\build.bat clean
-
-# Release build (default - builds both console and GUI versions, 64-bit)
-.\build.bat
-
-# Debug build
-.\build.bat Debug
-
-# Force specific Visual Studio generator (auto x64)
-.\build.bat Release "Visual Studio 17 2022"
-
-# Force 32-bit (override)
-.\build.bat Release "Visual Studio 17 2022" Win32
+```text
+recording_mode, recording_fps,
+control_mode, ai, player_mode,
+renderer, game_mode, physics_mode,
+pt_rays_per_frame, pt_max_bounces, pt_internal_scale,
+pt_roughness, pt_emissive, pt_accum_alpha, pt_denoise_strength,
+pt_force_full_pixel_rays, pt_use_ortho,
+pt_rr_enable, pt_rr_start_bounce, pt_rr_min_prob_pct,
+pt_fanout_enable, pt_fanout_cap, pt_fanout_abort,
+pt_soft_shadow_samples, pt_light_radius_pct, pt_pbr_enable,
+hud_show_play, hud_show_record
 ```
 
-**Build outputs:**
+High scores persist in `highscores.json` (top list, sorted, trimmed).
 
-- **Release builds:**
-  - GUI version: `dist\release\pong_win.exe`
-  - Console version: `dist\release\pong.exe`
-- **Debug builds:**
-  - GUI version: `dist\debug\pong_win.exe`
-  - Console version: `dist\debug\pong.exe`
+## Technical Stack
 
-### Building on Linux/Cross-platform
+* Language: C++17
+* Build: CMake (single config generator support + Visual Studio multi-config)
+* External libs: None
+* Targets: `pong` (console), `pong_win` (GUI)
 
-Console version only (GUI version requires Win32 APIs):
+## Building
+
+### Windows (Primary)
+
+```powershell
+# Clean
+./build.bat clean
+
+# Default Release (x64 auto)
+./build.bat
+
+# Debug
+./build.bat Debug
+
+# Specify generator
+./build.bat Release "Visual Studio 17 2022"
+
+# Force 32-bit (rarely needed)
+./build.bat Release "Visual Studio 17 2022" Win32
+
+```text
+Outputs placed in `dist/release/` or `dist/debug/`.
+
+### Linux / POSIX (Console Only)
 
 ```bash
-# Clean
 rm -rf build
-
-# Configure and build Release
 mkdir build && cd build
 cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
-
-# Configure and build Debug
-cmake -S .. -B . -DCMAKE_BUILD_TYPE=Debug
-cmake --build . --config Debug
 ```
 
-**Build output:** `dist/release/pong` or `dist/debug/pong` (console version)
+Binary appears in `dist/release/pong`.
 
-### Architecture (64-bit Enforcement)
+## Controls (Summary)
 
-By default Windows builds enforce 64-bit (pointer size must be 8). To build 32-bit intentionally:
+Console:
 
-```powershell
-cmake -S . -B build32 -G "Visual Studio 17 2022" -A Win32 -D ENFORCE_64BIT=OFF -D CMAKE_BUILD_TYPE=Release
-cmake --build build32 --config Release
-```
+* W / S – Move left paddle
+* 1–5 – Change mode (Classic / ThreeEnemies / Obstacles / MultiBall / ObstaclesMulti)
+* Q – Quit
 
-Or via the batch script (still requires ENFORCE_64BIT override if you reconfigure manually afterwards):
+GUI (Keyboard mode): W / S move, ESC exit, Right‑click open menu.
+GUI (Mouse mode): Cursor vertical = paddle, ESC exit, Right‑click menu.
 
-```powershell
-./build.bat Release "Visual Studio 17 2022" x86
-```
+Player mode / AI flags applied on game start; AI difficulty affects tracking speed.
 
-## Controls
+## Configuration Workflow (GUI)
 
-### Console Version
+1. Right‑click in window → menu / settings panel
+2. Adjust renderer, physics, mode, player mode, AI difficulty, path tracer tuning
+3. Start game / toggle recording
+4. Settings auto-save on change or exit
 
-- **W/S**: Move left paddle up/down
-- **Arrow Keys**: Alternative paddle controls
-- **Q**: Quit game
-- **1 / 2 / 3 / 4**: Switch game mode (Classic / Three Enemies / Obstacles / MultiBall)
-
-### GUI Version
-
-- **Keyboard Mode**:
-  - **W/S**: Move paddle up/down
-  - **ESC**: Exit game
-  - **Right-click**: Open configuration menu
-
-- **Mouse Mode**:
-  - **Mouse Movement**: Control paddle position
-  - **ESC**: Exit game
-  - **Right-click**: Open configuration menu
-
-## Configuration
-
-The Windows GUI version automatically saves and loads configuration from `settings.json`. All settings can be modified through the in-game menus:
-
-- **Right-click** during gameplay to access the configuration menu
-- **Renderer Settings** to choose between Classic GDI and Path Tracer
-- **Path Tracer Settings** for detailed ray tracing configuration
-- **Control Settings** to switch between keyboard and mouse control
-- **AI Difficulty** to adjust computer opponent strength
-
-Example `settings.json` structure:
-
-  ```json
-  {
-    "control_mode": 1,              // 0=keyboard, 1=mouse
-    "ai": 1,                        // 0=easy, 1=normal, 2=hard  
-    "renderer": 0,                  // 0=classic, 1=path tracer
-    "pt_rays_per_frame": 8000,      // Path tracer: rays per frame
-    "pt_max_bounces": 3,            // Path tracer: maximum light bounces
-    "pt_internal_scale": 60,        // Path tracer: render resolution %
-    "pt_roughness": 15,             // Path tracer: surface roughness %
-    "pt_emissive": 100,             // Path tracer: light intensity %
-    "pt_accum_alpha": 12,           // Path tracer: temporal blending %
-    "pt_denoise_strength": 70       // Path tracer: noise reduction %
-  }
-  ```
-
-**Note:** It's recommended to use the in-game settings menus rather than editing the JSON file directly, as the UI provides real-time preview and validation.
-
-## High Scores
-
-The Windows GUI version tracks high scores in `highscores.json`. Players can enter their name when achieving a high score. The system maintains the top 10 scores.
-
-## Project Structure
+## Project Layout
 
 ```text
 src/
-├── core/                   # Platform-independent game logic
-│   ├── game_core.cpp       # Main game simulation, physics, AI
-│   └── game_core.h         # GameCore class, GameState struct
-├── console/                # Console version implementation
-│   ├── game.cpp/.h         # Console game loop, rendering, input
-│   └── main.cpp            # Console entry point
-├── platform/               # Platform abstraction layer
-│   ├── platform.h          # Platform interface definition
-│   ├── platform_posix.cpp  # POSIX/Linux implementation
-│   └── platform_win.cpp    # Windows console implementation
-├── main.cpp                # Legacy console entry point
-├── game.cpp/.h             # Legacy console interface
-├── platform.h              # Legacy platform abstraction
-├── platform_*.cpp          # Legacy platform implementations
-└── win/                    # Windows GUI implementation
-    ├── app/                # Application management
-    ├── events/             # Event system
-    ├── input/              # Input handling
-    ├── integration/        # Windows system integration
-    ├── persistence/        # Settings and data persistence
-    ├── platform/           # Windows-specific platform code
-    ├── rendering/          # Rendering engines (GDI, path tracer)
-    ├── ui/                 # User interface components
-    ├── main_win.cpp        # GUI entry point, DPI awareness
-    ├── game_win.cpp/.h     # Main game window and logic
-    ├── settings.cpp/.h     # Settings management
-    └── highscores.cpp/.h   # High score tracking
+  core/        # GameCore (physics, AI, modes, obstacles, multi-ball)
+  console/     # Modern console frontend (supersedes legacy root files)
+  platform/    # Platform abstraction (win/posix console)
+  win/         # GUI application (app, rendering, ui, persistence, renderer)
+  (legacy root: main.cpp, game.cpp etc. retained for backward compatibility)
+docs/          # Hand-written docs & generated doxygen (html after build)
+dist/          # Build outputs & runtime JSON
 ```
 
-**Documentation:**
+## Physics & Gameplay Notes
 
-  ```text  
-  docs/
-  ├── README.md               # Documentation overview
-  ├── user/                   # User guides and tutorials
-  ├── developer/              # Technical documentation
-  └── doxygen/                # Generated API documentation (after build)
-  ```
+* Sub-stepped integration keeps collisions stable at high velocities
+* Tangent influence + paddle velocity mixing produces controllable spin
+* Combined mode (ObstaclesMulti) activates both obstacle movement & multi-ball collision set
 
-## Physics & Gameplay
+## Path Tracer Implementation Sketch
 
-The game features realistic Pong physics:
+* Orthographic mapping to 2D game space (optionally perspective)
+* Paddles: tinted metallic surfaces with roughness-driven reflection lobe
+* Ball: emissive sphere acts as soft area light (sampled N times)
+* Walls / arena: diffuse
+* Temporal accumulation resets on parameter changes / resize
+* Early termination via roulette; experimental fan‑out for exploration
 
-- **Ball Behavior**: Consistent velocity with slight acceleration on paddle hits
-- **Paddle Interaction**: Ball spin affected by paddle velocity and contact point
-- **AI Intelligence**: Three difficulty levels with different reaction speeds
-- **Collision Detection**: Precise ball-to-paddle collision with proper normal calculation
-- **Extended Modes**:
-  - Three Enemies: Horizontal AI paddles track incoming balls at top & bottom boundaries
-  - Obstacles: Moving AABB bricks add ricochet dynamics while scoring rules remain side-based
-  - MultiBall: Additional balls spawn with varying directions for chaotic play
+## Example Minimal Settings JSON
 
-## Development
+```json
+{
+  "control_mode": 1,
+  "ai": 1,
+  "player_mode": 0,
+  "renderer": 1,
+  "game_mode": 4,
+  "physics_mode": 1,
+  "recording_mode": 1,
+  "recording_fps": 60,
+  "pt_rays_per_frame": 8000,
+  "pt_max_bounces": 3,
+  "pt_internal_scale": 60,
+  "pt_roughness": 15,
+  "pt_emissive": 120,
+  "pt_accum_alpha": 12,
+  "pt_denoise_strength": 70
+}
+```
 
-### Architecture
+## Common Issues
 
-The project uses a modular architecture with shared game logic:
-
-1. **GameCore** (`src/core/`): Platform-independent game simulation
-2. **Platform Layer** (`src/platform*`): Console I/O abstraction
-3. **Frontends**: Console (`src/game.*`) and Windows GUI (`src/win/`)
-
-### Build Times
-
-- **Clean configure**: ~1-5 seconds
-- **Clean build**: ~10-30 seconds
-- **Incremental build**: ~2-10 seconds
-
-### Common Issues
-
-1. **CMake version warning**: Update `CMakeLists.txt` line 1 to `cmake_minimum_required(VERSION 3.10)` if needed
-2. **Windows blank window**: Run console version to check for error messages
-3. **High DPI issues**: The GUI version includes DPI awareness code for modern displays
-
-## License
-
-This project is available for educational and personal use.
+| Issue | Resolution |
+|-------|------------|
+| Doxygen warnings about user guide refs | Updated guide removes broken anchors; rebuild docs |
+| Blank GUI window | Run console build to check logs; verify DPI scaling |
+| High CPU (path tracer) | Lower rays per frame, internal scale, or disable fan-out |
+| Obstacles missing in combined mode | Ensure mode set to ObstaclesMulti (value 4) |
 
 ## Contributing
 
-Contributions are welcome! The codebase is designed for easy extension:
+Ideas: new game modes (power-ups?), improved material model, replay export, network multiplayer, energy conserving paddle scattering, GPU backend, WASM build.
 
-- Add new platforms by implementing the `Platform` interface
-- Extend game features in the shared `GameCore` class
-- Add new frontends following the existing patterns
+Coding guidelines: const-correct, RAII, no exceptions thrown across module boundaries, keep dependencies zero.
 
-## System Requirements
+## License
 
-- **Windows**: Windows 7+ (GUI version), any Windows with console support
-- **Linux**: Any POSIX-compliant system with terminal support
-- **Memory**: < 10MB RAM
-- **Storage**: < 5MB disk space
+Educational / personal use. Attribute the project if you fork substantially.
+
+## Acknowledgements
+
+Built as a compact demonstration of clean C++17 structure + experimental CPU rendering techniques.
+
+Enjoy experimenting – open an issue or PR for enhancements.
