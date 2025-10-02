@@ -28,7 +28,11 @@ void HudOverlay::draw(const GameState& gs, const SRStats* stats, HDC dc, int w, 
 	drawText(dc, L"Mode: " + modeName, xPad, yPad + lineH*line++);
 	if(stats){
 		wchar_t buf[256];
-		swprintf(buf,256,L"PT %.1fms | %d spp", stats->msTotal, stats->spp); drawText(dc, buf, xPad, yPad + lineH*line++);
+		// Add packet tracing mode indicator
+		std::wstring modeStr = L"";
+		if (stats->packetMode == 8) modeStr = L" [AVX 8-wide]";
+		else if (stats->packetMode == 4) modeStr = L" [SSE 4-wide]";
+		swprintf(buf,256,L"PT %.1fms | %d spp%s", stats->msTotal, stats->spp, modeStr.c_str()); drawText(dc, buf, xPad, yPad + lineH*line++);
 		swprintf(buf,256,L"Trace %.1f  Temp %.1f  Denoise %.1f", stats->msTrace, stats->msTemporal, stats->msDenoise); drawText(dc, buf, xPad, yPad + lineH*line++);
 		swprintf(buf,256,L"Upscale %.1f  Bnc %.1f", stats->msUpscale, stats->avgBounceDepth); drawText(dc, buf, xPad, yPad + lineH*line++);
 		// Extra diagnostics: internal resolution & first pixel sample (posted after tone map in adapter)

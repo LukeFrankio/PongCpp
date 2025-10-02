@@ -66,6 +66,9 @@ struct Settings {
     int pt_bilateral_sigma_space = 10; ///< Bilateral spatial sigma * 10 (1-100, default 10 = 1.0)
     int pt_bilateral_sigma_color = 10; ///< Bilateral color sigma * 100 (1-100, default 10 = 0.1)
     int pt_light_cull_distance = 500;  ///< Light culling distance * 10 (10-10000, default 500 = 50.0)
+    
+    // Phase 9: SIMD packet ray tracing
+    int pt_force_4wide_simd = 1;       ///< Force 4-wide SSE even with AVX2 (0=allow 8-wide AVX, 1=force 4-wide)
 };
 
 /**

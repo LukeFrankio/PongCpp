@@ -50,6 +50,8 @@ static void applySettings(SoftRenderer* r, SRConfig& cur, const Settings& s){
     apply(cur.bilateralSigmaSpace, s.pt_bilateral_sigma_space / 10.0f);
     apply(cur.bilateralSigmaColor, s.pt_bilateral_sigma_color / 100.0f);
     apply(cur.lightCullDistance, s.pt_light_cull_distance / 10.0f);
+    // Phase 9: SIMD packet tracing settings
+    apply(cur.force4WideSIMD, s.pt_force_4wide_simd != 0);
     if(changed){ r->configure(cur); r->resetHistory(); }
 }void PTRendererAdapter::configure(const Settings& s){
 	if(!impl) return; if(!cfg.enablePathTracing) cfg.enablePathTracing=true; applySettings(impl,cfg,s);

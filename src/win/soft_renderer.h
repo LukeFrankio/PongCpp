@@ -83,6 +83,7 @@ struct SRConfig {
     
     // Phase 9: SIMD packet ray tracing
     bool  usePacketTracing = true;          // Use 4-wide SIMD ray packets for primary rays (4x throughput improvement)
+    bool  force4WideSIMD = true;            // Force 4-wide SSE even when AVX2 available (avoids throttling on some CPUs)
 };
 
 // Runtime statistics for profiling / HUD overlay
@@ -105,6 +106,7 @@ struct SRStats {
     int rouletteTerminations = 0;    // number of paths killed by Russian roulette
     bool denoiseSkipped = false;     // true when denoise pass skipped due to quality heuristic
     int threadsUsed = 1;             // number of threads used in last render (includes main)
+    int packetMode = 0;              // 0=scalar, 4=SSE 4-wide, 8=AVX 8-wide packet tracing
 };
 
 class SoftRenderer {

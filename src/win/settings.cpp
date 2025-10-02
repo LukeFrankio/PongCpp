@@ -49,6 +49,7 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("pt_roughness", s.pt_roughness);
     extractInt("pt_emissive", s.pt_emissive);
     extractInt("pt_paddle_emissive", s.pt_paddle_emissive);
+    extractInt("pt_force_4wide_simd", s.pt_force_4wide_simd);
     extractInt("pt_accum_alpha", s.pt_accum_alpha);
     extractInt("pt_denoise_strength", s.pt_denoise_strength);
     extractInt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
@@ -100,6 +101,7 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"pt_roughness\": " << s.pt_roughness << ",\n";
     ofs << "  \"pt_emissive\": " << s.pt_emissive << ",\n";
     ofs << "  \"pt_paddle_emissive\": " << s.pt_paddle_emissive << ",\n";
+    ofs << "  \"pt_force_4wide_simd\": " << s.pt_force_4wide_simd << ",\n";
     ofs << "  \"pt_accum_alpha\": " << s.pt_accum_alpha << ",\n";
     ofs << "  \"pt_denoise_strength\": " << s.pt_denoise_strength << ",\n";
     ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << ",\n";

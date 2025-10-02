@@ -747,10 +747,37 @@ static FORCE_INLINE bool intersectPlane(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, float 
 }
 
 // ============================================================================
-// Phase 2: 4-wide SIMD Ray Packet Structures and Intersection Functions
+// Phase 2: SIMD Ray Packet Structures and Intersection Functions  
+// Supports both 4-wide (SSE) and 8-wide (AVX) processing
 // ============================================================================
 
-// 4-wide ray packet: 4 rays processed simultaneously
+// Enable AVX code paths if compiler supports it
+#if defined(__AVX2__) || defined(__AVX__) || (defined(_MSC_VER) && defined(__AVX2__))
+    #define COMPILE_AVX_SUPPORT 1
+    #include <immintrin.h>
+#else
+    #define COMPILE_AVX_SUPPORT 0
+#endif
+
+#if COMPILE_AVX_SUPPORT
+// 8-wide ray packet for AVX (processes 8 rays simultaneously)
+struct alignas(32) RayPacket8 {
+    __m256 ox, oy, oz;  // 8 ray origins
+    __m256 dx, dy, dz;  // 8 ray directions  
+    __m256 mask;        // Active mask
+};
+
+// 8-wide hit record
+struct alignas(32) Hit8 {
+    __m256 t;           // 8 hit distances
+    __m256 nx, ny, nz;  // 8 normals
+    __m256 px, py, pz;  // 8 hit positions
+    __m256i mat;        // 8 material IDs
+    __m256 valid;       // Hit mask
+};
+#endif
+
+// 4-wide ray packet: 4 rays processed simultaneously (SSE baseline)
 struct alignas(16) RayPacket4 {
     // Ray origins (SoA layout for SIMD)
     __m128 ox, oy, oz;  // 4 x-coords, 4 y-coords, 4 z-coords
@@ -810,6 +837,51 @@ static inline void initRayPacket4(RayPacket4 &packet,
     
     packet.mask = _mm_castsi128_ps(_mm_set1_epi32(0xFFFFFFFF));  // All active
 }
+
+#if COMPILE_AVX_SUPPORT
+// 8-wide ray packet initialization
+static inline void initRayPacket8(RayPacket8 &packet, 
+                                   const Vec3 &camPos, 
+                                   const Vec3 &camDir, 
+                                   const Vec3 &camRight, 
+                                   const Vec3 &camUp,
+                                   float fov,
+                                   int rtW, int rtH,
+                                   int px0, int px1, int px2, int px3, int px4, int px5, int px6, int px7,
+                                   int py0, int py1, int py2, int py3, int py4, int py5, int py6, int py7) {
+    // Compute ray directions for 8 pixels
+    float aspect = static_cast<float>(rtW) / rtH;
+    float tanHalfFov = std::tan(fov * 0.5f * 3.14159265f / 180.0f);
+    
+    float dirs[8][3];
+    int pxs[8] = {px0, px1, px2, px3, px4, px5, px6, px7};
+    int pys[8] = {py0, py1, py2, py3, py4, py5, py6, py7};
+    
+    for (int i = 0; i < 8; i++) {
+        float u = (2.0f * (pxs[i] + 0.5f) / rtW - 1.0f) * aspect * tanHalfFov;
+        float v = (1.0f - 2.0f * (pys[i] + 0.5f) / rtH) * tanHalfFov;
+        
+        Vec3 dir = norm(camDir + camRight * u + camUp * v);
+        dirs[i][0] = dir.x;
+        dirs[i][1] = dir.y;
+        dirs[i][2] = dir.z;
+    }
+    
+    // Load into SIMD registers (SoA layout)
+    packet.ox = _mm256_set1_ps(camPos.x);
+    packet.oy = _mm256_set1_ps(camPos.y);
+    packet.oz = _mm256_set1_ps(camPos.z);
+    
+    packet.dx = _mm256_set_ps(dirs[7][0], dirs[6][0], dirs[5][0], dirs[4][0], 
+                               dirs[3][0], dirs[2][0], dirs[1][0], dirs[0][0]);
+    packet.dy = _mm256_set_ps(dirs[7][1], dirs[6][1], dirs[5][1], dirs[4][1],
+                               dirs[3][1], dirs[2][1], dirs[1][1], dirs[0][1]);
+    packet.dz = _mm256_set_ps(dirs[7][2], dirs[6][2], dirs[5][2], dirs[4][2],
+                               dirs[3][2], dirs[2][2], dirs[1][2], dirs[0][2]);
+    
+    packet.mask = _mm256_castsi256_ps(_mm256_set1_epi32(0xFFFFFFFF));  // All active
+}
+#endif
 
 // 4-wide sphere intersection (tests 4 rays against 1 sphere)
 static inline void intersectSphere4(const RayPacket4 &rays,
@@ -920,6 +992,115 @@ static inline void intersectSphere4(const RayPacket4 &rays,
                                              update_mask));
 }
 
+#if COMPILE_AVX_SUPPORT
+// 8-wide sphere intersection (tests 8 rays against 1 sphere)
+static inline void intersectSphere8(const RayPacket8 &rays,
+                                    const Vec3 &center,
+                                    float radius,
+                                    const __m256 &tMax,
+                                    Hit8 &hit,
+                                    int mat) {
+    // Load sphere center into SIMD
+    __m256 cx = _mm256_set1_ps(center.x);
+    __m256 cy = _mm256_set1_ps(center.y);
+    __m256 cz = _mm256_set1_ps(center.z);
+    __m256 r2 = _mm256_set1_ps(radius * radius);
+    
+    // Compute oc = ro - center (for all 8 rays)
+    __m256 ocx = _mm256_sub_ps(rays.ox, cx);
+    __m256 ocy = _mm256_sub_ps(rays.oy, cy);
+    __m256 ocz = _mm256_sub_ps(rays.oz, cz);
+    
+    // b = dot(oc, rd) - use FMA if available
+    #ifdef __FMA__
+    __m256 b = _mm256_fmadd_ps(ocx, rays.dx, _mm256_fmadd_ps(ocy, rays.dy, _mm256_mul_ps(ocz, rays.dz)));
+    __m256 oc_len2 = _mm256_fmadd_ps(ocx, ocx, _mm256_fmadd_ps(ocy, ocy, _mm256_mul_ps(ocz, ocz)));
+    #else
+    __m256 b = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(ocx, rays.dx),
+                                           _mm256_mul_ps(ocy, rays.dy)),
+                             _mm256_mul_ps(ocz, rays.dz));
+    __m256 oc_len2 = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(ocx, ocx),
+                                                  _mm256_mul_ps(ocy, ocy)),
+                                   _mm256_mul_ps(ocz, ocz));
+    #endif
+    __m256 c = _mm256_sub_ps(oc_len2, r2);
+    
+    // disc = b*b - c
+    __m256 disc = _mm256_sub_ps(_mm256_mul_ps(b, b), c);
+    
+    // Check if disc < 0 (no hit)
+    __m256 disc_valid = _mm256_cmp_ps(disc, _mm256_setzero_ps(), _CMP_GE_OQ);
+    
+    // sqrt(disc)
+    __m256 sqrt_disc = _mm256_sqrt_ps(_mm256_max_ps(disc, _mm256_setzero_ps()));
+    
+    // t = -b - sqrt(disc)
+    __m256 t = _mm256_sub_ps(_mm256_sub_ps(_mm256_setzero_ps(), b), sqrt_disc);
+    
+    // If t < 1e-3, try -b + sqrt(disc)
+    __m256 t_alt = _mm256_add_ps(_mm256_sub_ps(_mm256_setzero_ps(), b), sqrt_disc);
+    __m256 t_small = _mm256_cmp_ps(t, _mm256_set1_ps(1e-3f), _CMP_LT_OQ);
+    t = _mm256_blendv_ps(t, t_alt, t_small);
+    
+    // Check if t is in valid range [1e-3, tMax]
+    __m256 t_min_valid = _mm256_cmp_ps(t, _mm256_set1_ps(1e-3f), _CMP_GE_OQ);
+    __m256 t_max_valid = _mm256_cmp_ps(t, tMax, _CMP_LE_OQ);
+    __m256 t_valid = _mm256_and_ps(_mm256_and_ps(t_min_valid, t_max_valid), disc_valid);
+    
+    // Check if this hit is closer than existing hit
+    __m256 closer = _mm256_cmp_ps(t, hit.t, _CMP_LT_OQ);
+    __m256 update_mask = _mm256_and_ps(t_valid, closer);
+    
+    // Update hit record where update_mask is true
+    hit.t = _mm256_blendv_ps(hit.t, t, update_mask);
+    hit.valid = _mm256_or_ps(hit.valid, update_mask);
+    
+    // Compute hit position: pos = ro + rd * t
+    __m256 px = _mm256_add_ps(rays.ox, _mm256_mul_ps(rays.dx, t));
+    __m256 py = _mm256_add_ps(rays.oy, _mm256_mul_ps(rays.dy, t));
+    __m256 pz = _mm256_add_ps(rays.oz, _mm256_mul_ps(rays.dz, t));
+    
+    hit.px = _mm256_blendv_ps(hit.px, px, update_mask);
+    hit.py = _mm256_blendv_ps(hit.py, py, update_mask);
+    hit.pz = _mm256_blendv_ps(hit.pz, pz, update_mask);
+    
+    // Compute normal: n = normalize(pos - center)
+    __m256 nx = _mm256_sub_ps(px, cx);
+    __m256 ny = _mm256_sub_ps(py, cy);
+    __m256 nz = _mm256_sub_ps(pz, cz);
+    
+    // Normalize (per-lane)
+    alignas(32) float nx_arr[8], ny_arr[8], nz_arr[8];
+    _mm256_store_ps(nx_arr, nx);
+    _mm256_store_ps(ny_arr, ny);
+    _mm256_store_ps(nz_arr, nz);
+    
+    for (int i = 0; i < 8; i++) {
+        float len2 = nx_arr[i]*nx_arr[i] + ny_arr[i]*ny_arr[i] + nz_arr[i]*nz_arr[i];
+        if (len2 > 1e-16f) {
+            float inv_len = rsqrt_fast(len2);
+            nx_arr[i] *= inv_len;
+            ny_arr[i] *= inv_len;
+            nz_arr[i] *= inv_len;
+        }
+    }
+    
+    nx = _mm256_load_ps(nx_arr);
+    ny = _mm256_load_ps(ny_arr);
+    nz = _mm256_load_ps(nz_arr);
+    
+    hit.nx = _mm256_blendv_ps(hit.nx, nx, update_mask);
+    hit.ny = _mm256_blendv_ps(hit.ny, ny, update_mask);
+    hit.nz = _mm256_blendv_ps(hit.nz, nz, update_mask);
+    
+    // Set material ID
+    __m256i mat_id = _mm256_set1_epi32(mat);
+    hit.mat = _mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(hit.mat), 
+                                                    _mm256_castsi256_ps(mat_id), 
+                                                    update_mask));
+}
+#endif
+
 // 4-wide plane intersection (tests 4 rays against 1 plane)
 static inline void intersectPlane4(const RayPacket4 &rays,
                                    const Vec3 &planePoint,
@@ -997,6 +1178,83 @@ static inline void intersectPlane4(const RayPacket4 &rays,
                                              _mm_castsi128_ps(mat_id),
                                              update_mask));
 }
+
+#if COMPILE_AVX_SUPPORT
+// 8-wide plane intersection (tests 8 rays against 1 plane)
+static inline void intersectPlane8(const RayPacket8 &rays,
+                                   const Vec3 &planePoint,
+                                   const Vec3 &planeNormal,
+                                   const __m256 &tMax,
+                                   Hit8 &hit,
+                                   int mat) {
+    // Load plane data into SIMD
+    __m256 nx = _mm256_set1_ps(planeNormal.x);
+    __m256 ny = _mm256_set1_ps(planeNormal.y);
+    __m256 nz = _mm256_set1_ps(planeNormal.z);
+    
+    __m256 px = _mm256_set1_ps(planePoint.x);
+    __m256 py = _mm256_set1_ps(planePoint.y);
+    __m256 pz = _mm256_set1_ps(planePoint.z);
+    
+    // denom = dot(rd, n)
+    __m256 denom = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(rays.dx, nx),
+                                                _mm256_mul_ps(rays.dy, ny)),
+                                 _mm256_mul_ps(rays.dz, nz));
+    
+    // Check if |denom| < 1e-5 (parallel to plane)
+    __m256 abs_denom = _mm256_andnot_ps(_mm256_set1_ps(-0.0f), denom);
+    __m256 denom_valid = _mm256_cmp_ps(abs_denom, _mm256_set1_ps(1e-5f), _CMP_GE_OQ);
+    
+    // t = dot(p - ro, n) / denom
+    __m256 diff_x = _mm256_sub_ps(px, rays.ox);
+    __m256 diff_y = _mm256_sub_ps(py, rays.oy);
+    __m256 diff_z = _mm256_sub_ps(pz, rays.oz);
+    
+    __m256 numerator = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(diff_x, nx),
+                                                    _mm256_mul_ps(diff_y, ny)),
+                                     _mm256_mul_ps(diff_z, nz));
+    
+    __m256 t = _mm256_div_ps(numerator, denom);
+    
+    // Check if t is in valid range [1e-3, tMax]
+    __m256 t_min_valid = _mm256_cmp_ps(t, _mm256_set1_ps(1e-3f), _CMP_GE_OQ);
+    __m256 t_max_valid = _mm256_cmp_ps(t, tMax, _CMP_LE_OQ);
+    __m256 t_valid = _mm256_and_ps(_mm256_and_ps(t_min_valid, t_max_valid), denom_valid);
+    
+    // Check if this hit is closer than existing hit
+    __m256 closer = _mm256_cmp_ps(t, hit.t, _CMP_LT_OQ);
+    __m256 update_mask = _mm256_and_ps(t_valid, closer);
+    
+    // Update hit record
+    hit.t = _mm256_blendv_ps(hit.t, t, update_mask);
+    hit.valid = _mm256_or_ps(hit.valid, update_mask);
+    
+    // Compute hit position
+    __m256 pos_x = _mm256_add_ps(rays.ox, _mm256_mul_ps(rays.dx, t));
+    __m256 pos_y = _mm256_add_ps(rays.oy, _mm256_mul_ps(rays.dy, t));
+    __m256 pos_z = _mm256_add_ps(rays.oz, _mm256_mul_ps(rays.dz, t));
+    
+    hit.px = _mm256_blendv_ps(hit.px, pos_x, update_mask);
+    hit.py = _mm256_blendv_ps(hit.py, pos_y, update_mask);
+    hit.pz = _mm256_blendv_ps(hit.pz, pos_z, update_mask);
+    
+    // Determine normal direction (flip if denom >= 0, keep if denom < 0)
+    __m256 denom_neg = _mm256_cmp_ps(denom, _mm256_setzero_ps(), _CMP_LT_OQ);
+    __m256 normal_x = _mm256_blendv_ps(_mm256_sub_ps(_mm256_setzero_ps(), nx), nx, denom_neg);
+    __m256 normal_y = _mm256_blendv_ps(_mm256_sub_ps(_mm256_setzero_ps(), ny), ny, denom_neg);
+    __m256 normal_z = _mm256_blendv_ps(_mm256_sub_ps(_mm256_setzero_ps(), nz), nz, denom_neg);
+    
+    hit.nx = _mm256_blendv_ps(hit.nx, normal_x, update_mask);
+    hit.ny = _mm256_blendv_ps(hit.ny, normal_y, update_mask);
+    hit.nz = _mm256_blendv_ps(hit.nz, normal_z, update_mask);
+    
+    // Set material ID
+    __m256i mat_id = _mm256_set1_epi32(mat);
+    hit.mat = _mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(hit.mat),
+                                                    _mm256_castsi256_ps(mat_id),
+                                                    update_mask));
+}
+#endif
 
 // 4-wide box intersection (tests 4 rays against 1 axis-aligned box)
 static inline void intersectBox4(const RayPacket4 &rays,
@@ -1120,6 +1378,104 @@ static FORCE_INLINE bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, fl
     hit.t=tmin; hit.pos = ro + rd*tmin; hit.n = n; hit.mat=mat; return true;
 }
 
+#if COMPILE_AVX_SUPPORT
+// 8-wide box intersection (tests 8 rays against 1 axis-aligned box)
+static inline void intersectBox8(const RayPacket8 &rays,
+                                 const Vec3 &bmin,
+                                 const Vec3 &bmax,
+                                 const __m256 &tMax,
+                                 Hit8 &hit,
+                                 int mat) {
+    // Load box bounds
+    __m256 min_x = _mm256_set1_ps(bmin.x);
+    __m256 min_y = _mm256_set1_ps(bmin.y);
+    __m256 min_z = _mm256_set1_ps(bmin.z);
+    __m256 max_x = _mm256_set1_ps(bmax.x);
+    __m256 max_y = _mm256_set1_ps(bmax.y);
+    __m256 max_z = _mm256_set1_ps(bmax.z);
+    
+    // Slab test for X axis
+    __m256 inv_dx = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dx);
+    __m256 tx1 = _mm256_mul_ps(_mm256_sub_ps(min_x, rays.ox), inv_dx);
+    __m256 tx2 = _mm256_mul_ps(_mm256_sub_ps(max_x, rays.ox), inv_dx);
+    __m256 tmin_x = _mm256_min_ps(tx1, tx2);
+    __m256 tmax_x = _mm256_max_ps(tx1, tx2);
+    
+    // Slab test for Y axis
+    __m256 inv_dy = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dy);
+    __m256 ty1 = _mm256_mul_ps(_mm256_sub_ps(min_y, rays.oy), inv_dy);
+    __m256 ty2 = _mm256_mul_ps(_mm256_sub_ps(max_y, rays.oy), inv_dy);
+    __m256 tmin_y = _mm256_min_ps(ty1, ty2);
+    __m256 tmax_y = _mm256_max_ps(ty1, ty2);
+    
+    // Slab test for Z axis
+    __m256 inv_dz = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dz);
+    __m256 tz1 = _mm256_mul_ps(_mm256_sub_ps(min_z, rays.oz), inv_dz);
+    __m256 tz2 = _mm256_mul_ps(_mm256_sub_ps(max_z, rays.oz), inv_dz);
+    __m256 tmin_z = _mm256_min_ps(tz1, tz2);
+    __m256 tmax_z = _mm256_max_ps(tz1, tz2);
+    
+    // Compute intersection interval
+    __m256 tmin = _mm256_max_ps(_mm256_max_ps(tmin_x, tmin_y), tmin_z);
+    __m256 tmax_slab = _mm256_min_ps(_mm256_min_ps(tmax_x, tmax_y), tmax_z);
+    
+    // Valid if: tmax >= max(1e-3, tmin) && tmin < tMax && tmin < hit.t
+    __m256 tmin_clamped = _mm256_max_ps(_mm256_set1_ps(1e-3f), tmin);
+    __m256 valid = _mm256_and_ps(_mm256_cmp_ps(tmax_slab, tmin_clamped, _CMP_GE_OQ),
+                                 _mm256_cmp_ps(tmin_clamped, tMax, _CMP_LT_OQ));
+    valid = _mm256_and_ps(valid, _mm256_cmp_ps(tmin_clamped, hit.t, _CMP_LT_OQ));
+    valid = _mm256_and_ps(valid, rays.mask);
+    
+    // Update hits where valid
+    hit.t = _mm256_blendv_ps(hit.t, tmin_clamped, valid);
+    
+    // Compute hit position
+    __m256 px_hit = _mm256_add_ps(rays.ox, _mm256_mul_ps(rays.dx, tmin_clamped));
+    __m256 py_hit = _mm256_add_ps(rays.oy, _mm256_mul_ps(rays.dy, tmin_clamped));
+    __m256 pz_hit = _mm256_add_ps(rays.oz, _mm256_mul_ps(rays.dz, tmin_clamped));
+    
+    hit.px = _mm256_blendv_ps(hit.px, px_hit, valid);
+    hit.py = _mm256_blendv_ps(hit.py, py_hit, valid);
+    hit.pz = _mm256_blendv_ps(hit.pz, pz_hit, valid);
+    
+    // Determine hit normal (which slab was hit)
+    __m256 eps = _mm256_set1_ps(1e-5f);
+    __m256 hit_x = _mm256_cmp_ps(_mm256_sub_ps(tmin, tmin_x), eps, _CMP_LT_OQ);
+    __m256 hit_y = _mm256_and_ps(_mm256_cmp_ps(_mm256_sub_ps(tmin, tmin_y), eps, _CMP_LT_OQ),
+                                 _mm256_andnot_ps(hit_x, _mm256_castsi256_ps(_mm256_set1_epi32(-1))));
+    __m256 hit_z = _mm256_andnot_ps(_mm256_or_ps(hit_x, hit_y), _mm256_castsi256_ps(_mm256_set1_epi32(-1)));
+    
+    // Determine normal direction based on which side was hit
+    __m256 center_x = _mm256_mul_ps(_mm256_add_ps(min_x, max_x), _mm256_set1_ps(0.5f));
+    __m256 center_y = _mm256_mul_ps(_mm256_add_ps(min_y, max_y), _mm256_set1_ps(0.5f));
+    __m256 center_z = _mm256_mul_ps(_mm256_add_ps(min_z, max_z), _mm256_set1_ps(0.5f));
+    
+    // Sign based on ray origin relative to box center
+    __m256 sign_x = _mm256_blendv_ps(_mm256_set1_ps(-1.0f), _mm256_set1_ps(1.0f), 
+                                     _mm256_cmp_ps(rays.ox, center_x, _CMP_LT_OQ));
+    __m256 sign_y = _mm256_blendv_ps(_mm256_set1_ps(-1.0f), _mm256_set1_ps(1.0f), 
+                                     _mm256_cmp_ps(rays.oy, center_y, _CMP_LT_OQ));
+    __m256 sign_z = _mm256_blendv_ps(_mm256_set1_ps(-1.0f), _mm256_set1_ps(1.0f), 
+                                     _mm256_cmp_ps(rays.oz, center_z, _CMP_LT_OQ));
+    
+    __m256 nx = _mm256_blendv_ps(_mm256_setzero_ps(), sign_x, hit_x);
+    __m256 ny = _mm256_blendv_ps(_mm256_setzero_ps(), sign_y, hit_y);
+    __m256 nz = _mm256_blendv_ps(_mm256_setzero_ps(), sign_z, hit_z);
+    
+    hit.nx = _mm256_blendv_ps(hit.nx, nx, valid);
+    hit.ny = _mm256_blendv_ps(hit.ny, ny, valid);
+    hit.nz = _mm256_blendv_ps(hit.nz, nz, valid);
+    
+    // Material
+    __m256i mat_val = _mm256_set1_epi32(mat);
+    hit.mat = _mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(hit.mat), 
+                                                    _mm256_castsi256_ps(mat_val), valid));
+    
+    // Update valid mask
+    hit.valid = _mm256_or_ps(hit.valid, valid);
+}
+#endif
+
 // 4-wide AABB intersection (tests 4 rays against 1 AABB)
 // Returns a mask indicating which rays hit the AABB
 static inline __m128 intersectAABB4(const RayPacket4 &rays, const Vec3 &bmin, const Vec3 &bmax, const __m128 &tMax) {
@@ -1161,6 +1517,50 @@ static inline __m128 intersectAABB4(const RayPacket4 &rays, const Vec3 &bmin, co
     __m128 hit2 = _mm_cmplt_ps(tmin, tMax);
     return _mm_and_ps(hit1, hit2);
 }
+
+#if COMPILE_AVX_SUPPORT
+// 8-wide AABB intersection (tests 8 rays against 1 AABB)
+// Returns a mask indicating which rays hit the AABB
+static inline __m256 intersectAABB8(const RayPacket8 &rays, const Vec3 &bmin, const Vec3 &bmax, const __m256 &tMax) {
+    // Load AABB bounds
+    __m256 bmin_x = _mm256_set1_ps(bmin.x);
+    __m256 bmin_y = _mm256_set1_ps(bmin.y);
+    __m256 bmin_z = _mm256_set1_ps(bmin.z);
+    __m256 bmax_x = _mm256_set1_ps(bmax.x);
+    __m256 bmax_y = _mm256_set1_ps(bmax.y);
+    __m256 bmax_z = _mm256_set1_ps(bmax.z);
+    
+    // Compute inverse ray direction
+    __m256 invdx = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dx);
+    __m256 invdy = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dy);
+    __m256 invdz = _mm256_div_ps(_mm256_set1_ps(1.0f), rays.dz);
+    
+    // X slab
+    __m256 tx1 = _mm256_mul_ps(_mm256_sub_ps(bmin_x, rays.ox), invdx);
+    __m256 tx2 = _mm256_mul_ps(_mm256_sub_ps(bmax_x, rays.ox), invdx);
+    __m256 tmin = _mm256_min_ps(tx1, tx2);
+    __m256 tmax_val = _mm256_max_ps(tx1, tx2);
+    
+    // Y slab
+    __m256 ty1 = _mm256_mul_ps(_mm256_sub_ps(bmin_y, rays.oy), invdy);
+    __m256 ty2 = _mm256_mul_ps(_mm256_sub_ps(bmax_y, rays.oy), invdy);
+    tmin = _mm256_max_ps(tmin, _mm256_min_ps(ty1, ty2));
+    tmax_val = _mm256_min_ps(tmax_val, _mm256_max_ps(ty1, ty2));
+    
+    // Z slab
+    __m256 tz1 = _mm256_mul_ps(_mm256_sub_ps(bmin_z, rays.oz), invdz);
+    __m256 tz2 = _mm256_mul_ps(_mm256_sub_ps(bmax_z, rays.oz), invdz);
+    tmin = _mm256_max_ps(tmin, _mm256_min_ps(tz1, tz2));
+    tmax_val = _mm256_min_ps(tmax_val, _mm256_max_ps(tz1, tz2));
+    
+    // Check if ray intersects AABB: tmax >= max(0, tmin) && tmin < tMax
+    __m256 zero = _mm256_setzero_ps();
+    __m256 tmin_clamped = _mm256_max_ps(zero, tmin);
+    __m256 hit1 = _mm256_cmp_ps(tmax_val, tmin_clamped, _CMP_GE_OQ);
+    __m256 hit2 = _mm256_cmp_ps(tmin, tMax, _CMP_LT_OQ);
+    return _mm256_and_ps(hit1, hit2);
+}
+#endif
 
 void SoftRenderer::render(const GameState &gs) {
     // (Segment tracer removed; integrate its tone mapping into main pipeline instead)
@@ -2112,10 +2512,345 @@ void SoftRenderer::render(const GameState &gs) {
                     for (int y = tileY; y < tileYEnd; ++y) {
                         int x = tileX;
                         
-                        // Phase 9: SIMD packet ray tracing for primary rays (4-wide batches)
-                        // Process 4 pixels at once when packet tracing is enabled and spp==1
+                        // Phase 9: SIMD packet ray tracing for primary rays (4-wide or 8-wide batches)
+                        // Process pixels in batches when packet tracing is enabled and spp==1
                         // Uses SIMD BVH traversal for efficient intersection testing
+                        // Runtime dispatch: 8-wide AVX path when CPU supports AVX2, else 4-wide SSE
+                        // Note: 8-wide can be slower on some CPUs due to AVX frequency throttling
+#if COMPILE_AVX_SUPPORT
+                        // Runtime choice: 8-wide AVX path when CPU supports AVX2 and not forced to 4-wide
+                        // 8-wide can be slower on some CPUs due to AVX frequency throttling
+                        // Best for: Zen 2+, Ice Lake+. Use 4-wide for older CPUs.
+                        if (config.usePacketTracing && spp == 1 && g_cpuFeatures.avx2 && !config.force4WideSIMD) {
+                            // 8-wide AVX path
+                            for (; x + 7 < tileXEnd; x += 8) {
+                                // Initialize 8 primary rays (one per pixel)
+                                RayPacket8 packet8;
+                                Vec3 ro8[8], rd8[8];
+                                uint32_t seeds8[8];
+                                
+                                for (int i = 0; i < 8; ++i) {
+                                    int px = x + i;
+                                    seeds8[i] = (px*1973) ^ (y*9277) ^ (frameCounter*26699u);
+                                    float u1, u2;
+                                    
+                                    if (config.useBlueNoise) {
+                                        u1 = sampleBlueNoise(px, y, frameCounter);
+                                        u2 = sampleBlueNoise(px + 32, y + 32, frameCounter);
+                                    } else {
+                                        rng2(seeds8[i], u1, u2);
+                                    }
+                                    
+                                    float rx = (px + u1) * invRTW;
+                                    float ry = (y + u2) * invRTH;
+                                    
+                                    if (config.useOrtho) {
+                                        float jx, jy;
+                                        rng2(seeds8[i], jx, jy);
+                                        float wx = ((px + jx) * invRTW - 0.5f) * 4.0f;
+                                        float wy = (((rtH-1-y) + jy) * invRTH - 0.5f) * 3.0f;
+                                        ro8[i] = {wx, wy, -1.0f};
+                                        rd8[i] = {0, 0, 1};
+                                    } else {
+                                        float px_cam = (2*rx - 1) * tanF * aspect;
+                                        float py_cam = (1 - 2*ry) * tanF;
+                                        rd8[i] = norm(Vec3{px_cam, py_cam, 1});
+                                        ro8[i] = camPos;
+                                    }
+                                }
+                                
+                                // Load rays into SIMD packet - use loadu for better performance with non-aligned data
+                                alignas(32) float ox_arr[8], oy_arr[8], oz_arr[8];
+                                alignas(32) float dx_arr[8], dy_arr[8], dz_arr[8];
+                                for (int i = 0; i < 8; ++i) {
+                                    ox_arr[i] = ro8[i].x; oy_arr[i] = ro8[i].y; oz_arr[i] = ro8[i].z;
+                                    dx_arr[i] = rd8[i].x; dy_arr[i] = rd8[i].y; dz_arr[i] = rd8[i].z;
+                                }
+                                packet8.ox = _mm256_load_ps(ox_arr);
+                                packet8.oy = _mm256_load_ps(oy_arr);
+                                packet8.oz = _mm256_load_ps(oz_arr);
+                                packet8.dx = _mm256_load_ps(dx_arr);
+                                packet8.dy = _mm256_load_ps(dy_arr);
+                                packet8.dz = _mm256_load_ps(dz_arr);
+                                packet8.mask = _mm256_castsi256_ps(_mm256_set1_epi32(-1));
+                                
+                                // Initialize hit records
+                                Hit8 hit8;
+                                hit8.t = _mm256_set1_ps(1e30f);
+                                hit8.valid = _mm256_setzero_ps();
+                                hit8.nx = _mm256_setzero_ps();
+                                hit8.ny = _mm256_setzero_ps();
+                                hit8.nz = _mm256_setzero_ps();
+                                hit8.px = _mm256_setzero_ps();
+                                hit8.py = _mm256_setzero_ps();
+                                hit8.pz = _mm256_setzero_ps();
+                                hit8.mat = _mm256_set1_epi32(0);
+                                
+                                __m256 tMax8 = _mm256_set1_ps(1e30f);
+                                
+                                // Test against scene geometry (8 rays simultaneously)
+                                intersectPlane8(packet8, Vec3{0, 1.6f, 0}, Vec3{0, -1, 0}, tMax8, hit8, 0);
+                                intersectPlane8(packet8, Vec3{0, -1.6f, 0}, Vec3{0, 1, 0}, tMax8, hit8, 0);
+                                intersectPlane8(packet8, Vec3{0, 0, 1.8f}, Vec3{0, 0, -1}, tMax8, hit8, 0);
+                                
+                                // BVH traversal for balls, paddles, and obstacles (8 rays simultaneously)
+                                if (bvhRootIndex >= 0) {
+                                    int stack[64];
+                                    int stackPtr = 0;
+                                    stack[stackPtr++] = bvhRootIndex;
+                                    
+                                    while (stackPtr > 0) {
+                                        int nodeIdx = stack[--stackPtr];
+                                        const BVHNode& node = bvhNodes[nodeIdx];
+                                        
+                                        __m256 hit_mask = intersectAABB8(packet8, node.bmin, node.bmax, hit8.t);
+                                        int hit_any = _mm256_movemask_ps(hit_mask);
+                                        if (hit_any == 0) continue;
+                                        
+                                        if (node.primCount > 0) {
+                                            for (int i = 0; i < node.primCount; ++i) {
+                                                const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
+                                                if (prim.objType == 0) {
+                                                    int bi = prim.objIndex;
+                                                    intersectSphere8(packet8, ballCenters[bi], ballRs[bi], tMax8, hit8, prim.mat);
+                                                } else if (prim.objType == 1) {
+                                                    intersectBox8(packet8, prim.bmin, prim.bmax, tMax8, hit8, prim.mat);
+                                                } else if (prim.objType == 2) {
+                                                    intersectBox8(packet8, prim.bmin, prim.bmax, tMax8, hit8, prim.mat);
+                                                }
+                                            }
+                                        } else {
+                                            if (node.leftChild >= 0) stack[stackPtr++] = node.leftChild;
+                                            if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
+                                        }
+                                    }
+                                }
+                                
+                                // Extract results
+                                alignas(32) float t_out8[8], nx_out8[8], ny_out8[8], nz_out8[8];
+                                alignas(32) float px_out8[8], py_out8[8], pz_out8[8];
+                                alignas(32) int32_t mat_out8[8];
+                                alignas(32) float valid_out8[8];
+                                
+                                _mm256_store_ps(t_out8, hit8.t);
+                                _mm256_store_ps(nx_out8, hit8.nx);
+                                _mm256_store_ps(ny_out8, hit8.ny);
+                                _mm256_store_ps(nz_out8, hit8.nz);
+                                _mm256_store_ps(px_out8, hit8.px);
+                                _mm256_store_ps(py_out8, hit8.py);
+                                _mm256_store_ps(pz_out8, hit8.pz);
+                                _mm256_store_si256((__m256i*)mat_out8, hit8.mat);
+                                _mm256_store_ps(valid_out8, hit8.valid);
+                                
+                                // Process each ray result (scalar path tracing continues)
+                                for (int i = 0; i < 8; ++i) {
+                                    int px = x + i;
+                                    Vec3 col{0, 0, 0};
+                                    uint32_t seed = seeds8[i];
+                                    Vec3 ro = ro8[i];
+                                    Vec3 rd = rd8[i];
+                                    Vec3 throughput{1, 1, 1};
+                                    bool terminated = false;
+                                    int bounce = 0;
+                                    
+                                    uint32_t valid_bits;
+                                    std::memcpy(&valid_bits, &valid_out8[i], sizeof(uint32_t));
+                                    bool hit_primary = (valid_bits != 0);
+                                    
+                                    if (!hit_primary) {
+                                        float t = 0.5f * (rd.y + 1.0f);
+                                        Vec3 bgTop{0.26f, 0.30f, 0.38f};
+                                        Vec3 bgBottom{0.08f, 0.10f, 0.16f};
+                                        col = fma_madd(bgBottom, 1.0f - t, bgTop, t);
+                                        terminated = true;
+                                    } else {
+                                        Hit best;
+                                        best.t = t_out8[i];
+                                        best.n = Vec3{nx_out8[i], ny_out8[i], nz_out8[i]};
+                                        best.pos = Vec3{px_out8[i], py_out8[i], pz_out8[i]};
+                                        best.mat = mat_out8[i];
+                                        
+                                        if (best.mat == 1) {
+                                            col = fma_add(col, throughput * materials.emitColor, 1.0f);
+                                            terminated = true;
+                                        } else if (best.mat == 0) {
+                                            Vec3 n = best.n;
+                                            Vec3 d;
+                                            if (config.useCosineWeighted) {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                d = sampleCosineHemisphere(uA, uB, n);
+                                            } else {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 u = (std::fabs(n.x)>0.1f) ? Vec3{0,1,0} : Vec3{1,0,0};
+                                                Vec3 tangent = norm(cross(u,n));
+                                                Vec3 bitangent = cross(n,tangent);
+                                                d = norm(tangent*std::cos(r1)*r2s + bitangent*std::sin(r1)*r2s + n*std::sqrt(1.0f-r2));
+                                            }
+                                            float cosTh = std::max(dot(d,n),0.0f);
+                                            throughput = throughput * materials.diffuseAlbedo;
+                                            ro = fma_add(best.pos, best.n, 0.002f);
+                                            rd = d;
+                                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
+                                            col = fma_add(col, throughput * direct, 1.0f);
+                                            bounce = 1;
+                                        } else if (best.mat == 2) {
+                                            if (config.paddleEmissiveIntensity > 0.0f) {
+                                                col = fma_add(col, throughput * materials.paddleEmitColor, 1.0f);
+                                                terminated = true;
+                                                bounce = config.maxBounces;
+                                            } else {
+                                                Vec3 n = best.n;
+                                                float cosi = dot(rd, n);
+                                                rd = rd - n * (2.0f * cosi);
+                                                float rough = materials.roughness;
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = norm(n);
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                Vec3 fuzz = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                                rd = norm(fma_madd(rd, 1.0f - rough, fuzz, rough));
+                                                ro = fma_add(best.pos, rd, 0.002f);
+                                                throughput = throughput * (Vec3{0.86f, 0.88f, 0.94f} * 0.5f + materials.paddleColor * 0.5f);
+                                                Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;
+                                                col = fma_add(col, throughput * direct, 1.0f);
+                                                bounce = 1;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Continue with remaining bounces using scalar intersection
+                                    for (; bounce < config.maxBounces && !terminated; ++bounce) {
+                                        Hit best; best.t = 1e30f; bool hit = false; Hit tmp;
+                                        
+                                        // Test planes
+                                        if (intersectPlane(ro, rd, Vec3{0, 1.6f, 0}, Vec3{0, -1, 0}, best.t, tmp, 0)) { best = tmp; best.objId = 200; hit = true; }
+                                        if (intersectPlane(ro, rd, Vec3{0, -1.6f, 0}, Vec3{0, 1, 0}, best.t, tmp, 0)) { best = tmp; best.objId = 201; hit = true; }
+                                        if (intersectPlane(ro, rd, Vec3{0, 0, 1.8f}, Vec3{0, 0, -1}, best.t, tmp, 0)) { best = tmp; best.objId = 202; hit = true; }
+                                        
+                                        // BVH traversal
+                                        if (bvhRootIndex >= 0) {
+                                            int stack[64];
+                                            int stackPtr = 0;
+                                            stack[stackPtr++] = bvhRootIndex;
+                                            
+                                            while (stackPtr > 0) {
+                                                int nodeIdx = stack[--stackPtr];
+                                                const BVHNode& node = bvhNodes[nodeIdx];
+                                                if (!intersectAABB(ro, rd, node.bmin, node.bmax, best.t)) continue;
+                                                
+                                                if (node.primCount > 0) {
+                                                    for (int j = 0; j < node.primCount; ++j) {
+                                                        const BVHPrimitive& prim = bvhPrimitives[node.primStart + j];
+                                                        if (prim.objType == 0) {
+                                                            int bi = prim.objIndex;
+                                                            if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 1) {
+                                                            if (intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 2) {
+                                                            if (intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    if (node.leftChild >= 0) stack[stackPtr++] = node.leftChild;
+                                                    if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (!hit) {
+                                            float t = 0.5f * (rd.y + 1.0f);
+                                            Vec3 bgTop{0.26f, 0.30f, 0.38f};
+                                            Vec3 bgBottom{0.08f, 0.10f, 0.16f};
+                                            col = fma_add(col, throughput * fma_madd(bgBottom, 1.0f - t, bgTop, t), 1.0f);
+                                            terminated = true;
+                                            break;
+                                        }
+                                        
+                                        if (best.mat == 1) {
+                                            col = fma_add(col, throughput * materials.emitColor, 1.0f);
+                                            terminated = true;
+                                            break;
+                                        }
+                                        
+                                        if (best.mat == 0) {
+                                            Vec3 n = best.n;
+                                            Vec3 d;
+                                            if (config.useCosineWeighted) {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                d = sampleCosineHemisphere(uA, uB, n);
+                                            } else {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = n;
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                d = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                            }
+                                            ro = fma_add(best.pos, best.n, 0.002f);
+                                            rd = d;
+                                            throughput = throughput * materials.diffuseAlbedo;
+                                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
+                                            col = fma_add(col, throughput * direct, 1.0f);
+                                        } else if (best.mat == 2) {
+                                            if (config.paddleEmissiveIntensity > 0.0f) {
+                                                col = fma_add(col, throughput * materials.paddleEmitColor, 1.0f);
+                                                terminated = true;
+                                                bounce = config.maxBounces;
+                                            } else {
+                                                Vec3 n = best.n;
+                                                float cosi = dot(rd, n);
+                                                rd = rd - n * (2.0f * cosi);
+                                                float rough = materials.roughness;
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = norm(n);
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                Vec3 fuzz = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                                rd = norm(fma_madd(rd, 1.0f - rough, fuzz, rough));
+                                                ro = fma_add(best.pos, rd, 0.002f);
+                                                throughput = throughput * (Vec3{0.86f, 0.88f, 0.94f} * 0.5f + materials.paddleColor * 0.5f);
+                                                Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;
+                                                col = fma_add(col, throughput * direct, 1.0f);
+                                            }
+                                        }
+                                    }
+                                    
+                                    int idx = y*rtW + px;
+                                    accumR[idx] += col.x; accumG[idx] += col.y; accumB[idx] += col.z;
+                                    totalBounces.fetch_add(bounce, std::memory_order_relaxed);
+                                    pathsTraced.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            }
+                        }
+#endif
                         if (config.usePacketTracing && spp == 1) {
+                            // 4-wide SSE path (fallback or when AVX2 not available)
                             for (; x + 3 < tileXEnd; x += 4) {
                                 // Initialize 4 primary rays (one per pixel)
                                 RayPacket4 packet;
@@ -2876,6 +3611,18 @@ void SoftRenderer::render(const GameState &gs) {
         auto tTraceEnd = clock::now();
         stats_.msTrace = std::chrono::duration<float,std::milli>(tTraceEnd - t0).count(); t0 = tTraceEnd;
         stats_.spp = spp; stats_.totalRays = spp * rtW * rtH;
+        
+        // Track packet tracing mode
+        if (config.usePacketTracing && spp == 1) {
+#if COMPILE_AVX_SUPPORT
+            stats_.packetMode = (g_cpuFeatures.avx2 && !config.force4WideSIMD) ? 8 : 4;
+#else
+            stats_.packetMode = 4;
+#endif
+        } else {
+            stats_.packetMode = 0;
+        }
+        
     int pt = pathsTraced.load(); long long tb = totalBounces.load();
     stats_.avgBounceDepth = (pt>0)? (float)tb / (float)pt : 0.0f;
         stats_.earlyExitCount = earlyExitAccum.load();

@@ -67,14 +67,15 @@ private:
 	// index mapping after base sliders
 	int idxForce_() const { return kBaseSliderCount; }
 	int idxCamera_() const { return kBaseSliderCount + 1; }
-	int idxRREnable_() const { return kBaseSliderCount + 2; }
-	int idxRRStart_() const { return kBaseSliderCount + 3; }
-	int idxRRMin_() const { return kBaseSliderCount + 4; }
-	int idxPBREnable_() const { return kBaseSliderCount + 5; }
-	int idxFanoutEnable_() const { return kBaseSliderCount + 6; }
-	int idxFanoutCap_() const { return kBaseSliderCount + 7; }
-	int idxFanoutAbort_() const { return kBaseSliderCount + 8; }
-	int idxReset_() const { return kBaseSliderCount + 9; }
+	int idxForce4Wide_() const { return kBaseSliderCount + 2; }
+	int idxRREnable_() const { return kBaseSliderCount + 3; }
+	int idxRRStart_() const { return kBaseSliderCount + 4; }
+	int idxRRMin_() const { return kBaseSliderCount + 5; }
+	int idxPBREnable_() const { return kBaseSliderCount + 6; }
+	int idxFanoutEnable_() const { return kBaseSliderCount + 7; }
+	int idxFanoutCap_() const { return kBaseSliderCount + 8; }
+	int idxFanoutAbort_() const { return kBaseSliderCount + 9; }
+	int idxReset_() const { return kBaseSliderCount + 10; }
 	int totalItems_() const { return kBaseSliderCount + 10; }
 
 	void clampSel();

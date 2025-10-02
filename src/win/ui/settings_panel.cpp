@@ -22,6 +22,7 @@ void SettingsPanel::resetDefaults() {
 	settings_->pt_denoise_strength = 25;
 	settings_->pt_force_full_pixel_rays = 1;
 	settings_->pt_use_ortho = 0;
+	settings_->pt_force_4wide_simd = 1;
 	settings_->pt_rr_enable = 1;
 	settings_->pt_rr_start_bounce = 2;
 	settings_->pt_rr_min_prob_pct = 10;
@@ -100,19 +101,21 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	// Checkboxes & extra sliders (extended)
 	int cyForce = baseY + kBaseSliderCount*rowH; bool forceHot = (sel_==idxForce_());
 	int cyCam   = baseY + (kBaseSliderCount+1)*rowH; bool camHot = (sel_==idxCamera_());
-	int cyRRE   = baseY + (kBaseSliderCount+2)*rowH; bool rrHot = (sel_==idxRREnable_());
-	int cyRRStart = baseY + (kBaseSliderCount+3)*rowH; bool rrStartHot = (sel_==idxRRStart_());
-	int cyRRMin   = baseY + (kBaseSliderCount+4)*rowH; bool rrMinHot = (sel_==idxRRMin_());
-	int cyPBR   = baseY + (kBaseSliderCount+5)*rowH; bool pbrHot = (sel_==idxPBREnable_());
-	int cyFanoutEnable = baseY + (kBaseSliderCount+6)*rowH; bool fanEnableHot = (sel_==idxFanoutEnable_());
-	int cyFanoutCap = baseY + (kBaseSliderCount+7)*rowH; bool fanCapHot = (sel_==idxFanoutCap_());
-	int cyFanoutAbort = baseY + (kBaseSliderCount+8)*rowH; bool fanAbortHot = (sel_==idxFanoutAbort_());
+	int cyForce4W = baseY + (kBaseSliderCount+2)*rowH; bool force4WHot = (sel_==idxForce4Wide_());
+	int cyRRE   = baseY + (kBaseSliderCount+3)*rowH; bool rrHot = (sel_==idxRREnable_());
+	int cyRRStart = baseY + (kBaseSliderCount+4)*rowH; bool rrStartHot = (sel_==idxRRStart_());
+	int cyRRMin   = baseY + (kBaseSliderCount+5)*rowH; bool rrMinHot = (sel_==idxRRMin_());
+	int cyPBR   = baseY + (kBaseSliderCount+6)*rowH; bool pbrHot = (sel_==idxPBREnable_());
+	int cyFanoutEnable = baseY + (kBaseSliderCount+7)*rowH; bool fanEnableHot = (sel_==idxFanoutEnable_());
+	int cyFanoutCap = baseY + (kBaseSliderCount+8)*rowH; bool fanCapHot = (sel_==idxFanoutCap_());
+	int cyFanoutAbort = baseY + (kBaseSliderCount+9)*rowH; bool fanAbortHot = (sel_==idxFanoutAbort_());
 	// Recalculate scroll range using last dynamic row (fanout abort)
 	int contentBottom2 = cyFanoutAbort + rowH + (int)(80*ui_scale + 0.5);
 	maxScroll_ = std::max(0, contentBottom2 - usableHeight + topVisible);
 	auto drawCenterLine=[&](const std::wstring &txt,int cy,bool hot){ SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210)); RECT r{0,cy-16,winW,cy+16}; DrawTextW(memDC,txt.c_str(),-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE); };
 	drawCenterLine(std::wstring(L"Force 1 ray / pixel: ") + (settings_->pt_force_full_pixel_rays?L"ON":L"OFF"), cyForce, forceHot);
 	drawCenterLine(std::wstring(L"Camera: ") + (settings_->pt_use_ortho?L"Orthographic":L"Perspective"), cyCam, camHot);
+	drawCenterLine(std::wstring(L"Force 4-Wide SIMD: ") + (settings_->pt_force_4wide_simd?L"ON":L"OFF"), cyForce4W, force4WHot);
 	drawCenterLine(std::wstring(L"Russian Roulette: ") + (settings_->pt_rr_enable?L"ON":L"OFF"), cyRRE, rrHot);
 	drawCenterLine(std::wstring(L"PBR: ") + (settings_->pt_pbr_enable?L"ON":L"OFF"), cyPBR, pbrHot);
 	drawCenterLine(std::wstring(L"Fan-Out Mode: ") + (settings_->pt_fanout_enable?L"ON":L"OFF"), cyFanoutEnable, fanEnableHot);
@@ -164,6 +167,7 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 			}
 		} else if(idx==idxForce_()) return L"Force 1 Ray: RaysPerFrame treated as per‑pixel.";
 		else if(idx==idxCamera_()) return L"Camera: Ortho or Perspective.";
+		else if(idx==idxForce4Wide_()) return L"Force 4-Wide: Force 4-wide SSE (ON) or allow 8-wide AVX2 (OFF). 4-wide avoids throttling on older CPUs.";
 		else if(idx==idxRREnable_()) return L"Russian Roulette enable toggle.";
 		else if(idx==idxRRStart_()) return L"RR Start: Bounce to begin termination.";
 		else if(idx==idxRRMin_()) return L"RR Min Prob: Survival probability clamp.";
@@ -211,6 +215,8 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_force_full_pixel_rays = settings_->pt_force_full_pixel_rays?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxCamera_()) {
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_use_ortho = settings_->pt_use_ortho?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxForce4Wide_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_force_4wide_simd = settings_->pt_force_4wide_simd?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxRREnable_()) {
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_rr_enable = settings_->pt_rr_enable?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxPBREnable_()) {
@@ -259,17 +265,17 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		}
 		// RR Start bounce
 		{
-			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+3)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
+			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+4)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
 			if (mouse_x>=bar.left && mouse_x<=bar.right && mouse_y>=bar.top && mouse_y<=bar.bottom) { double tt=double(mouse_x-bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1; int val = 1 + (int)(tt*(16-1)+0.5); if(val<1) val=1; if(val>16) val=16; settings_->pt_rr_start_bounce=val; sel_=idxRRStart_(); changedSinceOpen_=true; }
 		}
 		// RR Min prob
 		{
-			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+4)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
+			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+5)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
 			if (mouse_x>=bar.left && mouse_x<=bar.right && mouse_y>=bar.top && mouse_y<=bar.bottom) { double tt=double(mouse_x-bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1; int val = 1 + (int)(tt*(90-1)+0.5); if(val<1) val=1; if(val>90) val=90; settings_->pt_rr_min_prob_pct=val; sel_=idxRRMin_(); changedSinceOpen_=true; }
 		}
 		// Fan-out cap slider
 		{
-			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+6)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
+			int bx = centerX - barW/2; int by = (baseY + (kBaseSliderCount+8)*rowH) + (int)(14*ui_scale + 0.5); RECT bar{bx,by,bx+barW,by+barH};
 			if (mouse_x>=bar.left && mouse_x<=bar.right && mouse_y>=bar.top && mouse_y<=bar.bottom) { double tt=double(mouse_x-bar.left)/barW; if(tt<0)tt=0; if(tt>1)tt=1; int val = 1000 + (int)(tt*(10000000-1000)+0.5); if(val<1000) val=1000; if(val>10000000) val=10000000; settings_->pt_fanout_cap=val; sel_=idxFanoutCap_(); changedSinceOpen_=true; }
 		}
 	}
@@ -279,7 +285,8 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		int cx = last_click_x; int cy = last_click_y; last_click_x = last_click_y = -1;
 		auto hitMid = [&](int cyLine){ RECT r{centerX - (int)(220*ui_scale), cyLine - (int)(16*ui_scale), centerX + (int)(220*ui_scale), cyLine + (int)(16*ui_scale)}; return (cx>=r.left && cx<=r.right && cy>=r.top && cy<=r.bottom); };
 		if (cy < panelTop && hitMid(cyForce)) { settings_->pt_force_full_pixel_rays = settings_->pt_force_full_pixel_rays?0:1; sel_=idxForce_(); changedSinceOpen_=true; }
-		else if (cy < panelTop && hitMid(cyCam))   { settings_->pt_use_ortho = settings_->pt_use_ortho?0:1; sel_=idxCamera_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyCam)) { settings_->pt_use_ortho = settings_->pt_use_ortho?0:1; sel_=idxCamera_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyForce4W)) { settings_->pt_force_4wide_simd = settings_->pt_force_4wide_simd?0:1; sel_=idxForce4Wide_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyRRE))   { settings_->pt_rr_enable = settings_->pt_rr_enable?0:1; sel_=idxRREnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyPBR))   { settings_->pt_pbr_enable = settings_->pt_pbr_enable?0:1; sel_=idxPBREnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyFanoutEnable)) { settings_->pt_fanout_enable = settings_->pt_fanout_enable?0:1; sel_=idxFanoutEnable_(); changedSinceOpen_=true; }
