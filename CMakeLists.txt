@@ -73,6 +73,12 @@ if (WIN32)
     )
     target_link_libraries(pong_win PRIVATE user32 gdi32)
     set_target_properties(pong_win PROPERTIES WIN32_EXECUTABLE YES)
+    # Embed Windows VERSIONINFO resource to provide file metadata (helps reduce false positives)
+    # If the resource exists, add it explicitly to the target sources so the RC is compiled and linked.
+    set(PONG_WIN_RC "${CMAKE_CURRENT_SOURCE_DIR}/src/win/pong.rc")
+    if(EXISTS "${PONG_WIN_RC}")
+        target_sources(pong_win PRIVATE "${PONG_WIN_RC}")
+    endif()
     
     # Phase 1 Performance Optimizations for path tracer
     if(MSVC)
