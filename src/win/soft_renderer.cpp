@@ -618,6 +618,121 @@ static bool intersectSphere(Vec3 ro, Vec3 rd, Vec3 c, float r, float tMax, Hit &
     return true;
 }
 
+// Phase 9: SIMD sphere intersection - test up to 4 spheres simultaneously
+// Returns bitmask indicating which spheres were hit (bit 0 = sphere 0, etc.)
+static FORCE_INLINE int intersectSpheres4(Vec3 ro, Vec3 rd, 
+                                          const Vec3* centers,  // Array of 4 sphere centers
+                                          const float* radii,    // Array of 4 sphere radii
+                                          int count,             // Number of valid spheres (1-4)
+                                          float tMax, 
+                                          Hit &bestHit,          // Updated if closer hit found
+                                          const int* mats,       // Array of 4 material IDs
+                                          const int* objIds) {   // Array of 4 object IDs
+    // Load ray origin and direction into SIMD registers
+    __m128 ro_x = _mm_set1_ps(ro.x);
+    __m128 ro_y = _mm_set1_ps(ro.y);
+    __m128 ro_z = _mm_set1_ps(ro.z);
+    __m128 rd_x = _mm_set1_ps(rd.x);
+    __m128 rd_y = _mm_set1_ps(rd.y);
+    __m128 rd_z = _mm_set1_ps(rd.z);
+    
+    // Load sphere centers (pad with zeros if count < 4)
+    alignas(16) float cx[4] = {0, 0, 0, 0};
+    alignas(16) float cy[4] = {0, 0, 0, 0};
+    alignas(16) float cz[4] = {0, 0, 0, 0};
+    alignas(16) float r[4] = {0, 0, 0, 0};
+    
+    for (int i = 0; i < count; ++i) {
+        cx[i] = centers[i].x;
+        cy[i] = centers[i].y;
+        cz[i] = centers[i].z;
+        r[i] = radii[i];
+    }
+    
+    __m128 c_x = _mm_load_ps(cx);
+    __m128 c_y = _mm_load_ps(cy);
+    __m128 c_z = _mm_load_ps(cz);
+    __m128 radius = _mm_load_ps(r);
+    
+    // Compute oc = ro - c (for all 4 spheres)
+    __m128 oc_x = _mm_sub_ps(ro_x, c_x);
+    __m128 oc_y = _mm_sub_ps(ro_y, c_y);
+    __m128 oc_z = _mm_sub_ps(ro_z, c_z);
+    
+    // b = dot(oc, rd)
+    __m128 b = _mm_add_ps(_mm_add_ps(_mm_mul_ps(oc_x, rd_x), 
+                                     _mm_mul_ps(oc_y, rd_y)),
+                          _mm_mul_ps(oc_z, rd_z));
+    
+    // cterm = dot(oc, oc) - r*r
+    __m128 oc_len2 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(oc_x, oc_x),
+                                           _mm_mul_ps(oc_y, oc_y)),
+                                _mm_mul_ps(oc_z, oc_z));
+    __m128 r2 = _mm_mul_ps(radius, radius);
+    __m128 cterm = _mm_sub_ps(oc_len2, r2);
+    
+    // disc = b*b - cterm
+    __m128 disc = _mm_sub_ps(_mm_mul_ps(b, b), cterm);
+    
+    // Check which spheres have valid discriminant (disc >= 0)
+    __m128 disc_valid = _mm_cmpge_ps(disc, _mm_setzero_ps());
+    
+    // Compute sqrt(disc) using fast approximation
+    __m128 s = _mm_sqrt_ps(_mm_max_ps(disc, _mm_setzero_ps()));
+    
+    // t = -b - s (try near intersection first)
+    __m128 t = _mm_sub_ps(_mm_sub_ps(_mm_setzero_ps(), b), s);
+    
+    // Check if t < 1e-3, if so try far intersection: t = -b + s
+    __m128 t_valid = _mm_cmpge_ps(t, _mm_set1_ps(1e-3f));
+    __m128 t_far = _mm_add_ps(_mm_sub_ps(_mm_setzero_ps(), b), s);
+    t = _mm_blendv_ps(t_far, t, t_valid);  // Use far if near invalid
+    
+    // Final validation: 1e-3 <= t < tMax and disc >= 0
+    __m128 t_min_valid = _mm_cmpge_ps(t, _mm_set1_ps(1e-3f));
+    __m128 t_max_valid = _mm_cmplt_ps(t, _mm_set1_ps(tMax));
+    __m128 hit_mask = _mm_and_ps(_mm_and_ps(disc_valid, t_min_valid), t_max_valid);
+    
+    // Mask out invalid spheres (beyond count)
+    if (count < 4) {
+        alignas(16) uint32_t count_mask[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
+        for (int i = count; i < 4; ++i) count_mask[i] = 0;
+        __m128 valid_mask = _mm_load_ps(reinterpret_cast<float*>(count_mask));
+        hit_mask = _mm_and_ps(hit_mask, valid_mask);
+    }
+    
+    // Extract hit mask as integer bitmask
+    int mask = _mm_movemask_ps(hit_mask);
+    if (mask == 0) return 0;  // No hits
+    
+    // Find closest hit
+    alignas(16) float t_arr[4];
+    _mm_store_ps(t_arr, t);
+    
+    bool foundCloser = false;
+    int hitSphere = -1;
+    float closestT = bestHit.t;
+    
+    for (int i = 0; i < count; ++i) {
+        if ((mask & (1 << i)) && t_arr[i] < closestT) {
+            closestT = t_arr[i];
+            hitSphere = i;
+            foundCloser = true;
+        }
+    }
+    
+    // Update best hit if we found closer intersection
+    if (foundCloser) {
+        bestHit.t = closestT;
+        bestHit.pos = ro + rd * closestT;
+        bestHit.n = norm(bestHit.pos - centers[hitSphere]);
+        bestHit.mat = mats[hitSphere];
+        bestHit.objId = objIds[hitSphere];
+    }
+    
+    return foundCloser ? (1 << hitSphere) : 0;
+}
+
 // Phase 1: Optimized plane intersection with branch hints
 static FORCE_INLINE bool intersectPlane(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, float tMax, Hit &hit, int mat) {
     float denom = dot(rd,n);
@@ -1955,11 +2070,44 @@ void SoftRenderer::render(const GameState &gs) {
                                     
                                     if (node.primCount > 0) {
                                         // Leaf node: test primitives
-                                        for (int i = 0; i < node.primCount; ++i) {
+                                        // Phase 9: Batch sphere tests using SIMD
+                                        Vec3 sphereCenters[4];
+                                        float sphereRadii[4];
+                                        int sphereMats[4];
+                                        int sphereObjIds[4];
+                                        int sphereCount = 0;
+                                        int firstNonSphere = -1;
+                                        
+                                        // Collect up to 4 spheres for SIMD batch processing
+                                        for (int i = 0; i < node.primCount && sphereCount < 4; ++i) {
+                                            const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
+                                            if (prim.objType == 0) {  // Ball (sphere)
+                                                int bi = prim.objIndex;
+                                                sphereCenters[sphereCount] = ballCenters[bi];
+                                                sphereRadii[sphereCount] = ballRs[bi];
+                                                sphereMats[sphereCount] = prim.mat;
+                                                sphereObjIds[sphereCount] = prim.objId;
+                                                sphereCount++;
+                                            } else if (firstNonSphere == -1) {
+                                                firstNonSphere = i;  // Remember first non-sphere for fallback
+                                                break;  // Stop collecting spheres once we hit non-sphere
+                                            }
+                                        }
+                                        
+                                        // Process batched spheres with SIMD
+                                        if (sphereCount > 0) {
+                                            if (intersectSpheres4(ro, rd, sphereCenters, sphereRadii, sphereCount, best.t, best, sphereMats, sphereObjIds)) {
+                                                hit = true;
+                                            }
+                                        }
+                                        
+                                        // Process remaining primitives (paddles, obstacles, or remaining spheres)
+                                        int startIdx = (firstNonSphere >= 0) ? firstNonSphere : sphereCount;
+                                        for (int i = startIdx; i < node.primCount; ++i) {
                                             const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
                                             
                                             if (prim.objType == 0) {
-                                                // Ball (sphere)
+                                                // Ball (sphere) - fallback to scalar for remaining spheres
                                                 int bi = prim.objIndex;
                                                 if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
                                                     best = tmp;
