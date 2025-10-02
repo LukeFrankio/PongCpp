@@ -371,7 +371,7 @@ void SoftRenderer::configure(const SRConfig &cfg) {
     if (config.accumAlpha < 0.01f) config.accumAlpha = 0.01f; if (config.accumAlpha > 0.9f) config.accumAlpha = 0.9f;
     if (config.denoiseStrength < 0.0f) config.denoiseStrength = 0.0f; if (config.denoiseStrength > 1.0f) config.denoiseStrength = 1.0f;
     if (config.metallicRoughness < 0.0f) config.metallicRoughness = 0.0f; if (config.metallicRoughness > 1.0f) config.metallicRoughness = 1.0f;
-    if (config.emissiveIntensity < 0.1f) config.emissiveIntensity = 0.1f; if (config.emissiveIntensity > 5.0f) config.emissiveIntensity = 5.0f;
+    // emissiveIntensity: no hard limit, allow extreme values for artistic control
     if (config.rouletteStartBounce < 1) config.rouletteStartBounce = 1; if (config.rouletteStartBounce > 16) config.rouletteStartBounce = 16;
     if (config.rouletteMinProb < 0.01f) config.rouletteMinProb = 0.01f; if (config.rouletteMinProb > 0.9f) config.rouletteMinProb = 0.9f;
     if (config.softShadowSamples < 1) config.softShadowSamples = 1; if (config.softShadowSamples > 64) config.softShadowSamples = 64;
@@ -804,6 +804,19 @@ void SoftRenderer::render(const GameState &gs) {
         }
     }
     float paddleThickness = 0.05f;
+    
+    // Paddle lights: collect paddle positions as area light sources if paddle emission enabled
+    struct PaddleLight { Vec3 center; float halfX; float halfY; };
+    std::vector<PaddleLight> paddleLights;
+    if (config.paddleEmissiveIntensity > 0.0f) {
+        // Add all active paddles as light sources
+        paddleLights.push_back({leftCenter, paddleHalfX, paddleHalfY});
+        paddleLights.push_back({rightCenter, paddleHalfX, paddleHalfY});
+        if (useHoriz) {
+            paddleLights.push_back({topCenter, horizHalfX, horizHalfY});
+            paddleLights.push_back({bottomCenter, horizHalfX, horizHalfY});
+        }
+    }
 
     // Camera setup
     Vec3 camPos = {0,0,-5.0f};
@@ -849,13 +862,15 @@ void SoftRenderer::render(const GameState &gs) {
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0))) return true;
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0))) return true;
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0))) return true;
-        // Paddles (inflated)
-        float inflate = 0.01f;
-        if (UNLIKELY(intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2))) return true;
-        if (UNLIKELY(intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2))) return true;
-        if (useHoriz) {
-            if (UNLIKELY(intersectBox(from,dir, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2))) return true;
-            if (UNLIKELY(intersectBox(from,dir, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2))) return true;
+        // Paddles: only block light if they're NOT emissive (emissive paddles act as light sources, not occluders)
+        if (config.paddleEmissiveIntensity <= 0.0f) {
+            float inflate = 0.01f;
+            if (UNLIKELY(intersectBox(from,dir, leftCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, leftCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2))) return true;
+            if (UNLIKELY(intersectBox(from,dir, rightCenter - Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, rightCenter + Vec3{paddleHalfX+inflate,paddleHalfY+inflate,paddleThickness+inflate}, best.t, tmp, 2))) return true;
+            if (useHoriz) {
+                if (UNLIKELY(intersectBox(from,dir, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2))) return true;
+                if (UNLIKELY(intersectBox(from,dir, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2))) return true;
+            }
         }
         if (useObs) {
             for (auto &b : obsBoxes) if (UNLIKELY(intersectBox(from,dir, b.bmin, b.bmax, best.t, tmp, 0))) return true;
@@ -867,13 +882,15 @@ void SoftRenderer::render(const GameState &gs) {
         }
         return false;
     };
-    // Sample direct lighting from all emissive spheres with soft shadows.
+    // Sample direct lighting from all emissive spheres and paddles with soft shadows.
     auto sampleDirect = [&](Vec3 pos, Vec3 n, Vec3 viewDir, uint32_t &seed, bool isMetal)->Vec3 {
-        if (UNLIKELY(ballCenters.empty())) return Vec3{0,0,0};
-        int lightCount = (int)ballCenters.size();
+        int totalLightCount = (int)ballCenters.size() + (int)paddleLights.size();
+        if (UNLIKELY(totalLightCount == 0)) return Vec3{0,0,0};
+        int ballLightCount = (int)ballCenters.size();
         int shadowSamples = std::max(1, config.softShadowSamples);
         Vec3 sum{0,0,0};
-        for (int li=0; li<lightCount; ++li) {
+        // Sample ball lights (spherical area lights)
+        for (int li=0; li<ballLightCount; ++li) {
             Vec3 center = ballCenters[li];
             float radius = ballRs[li] * config.lightRadiusScale;
             Vec3 lightAccum{0,0,0};
@@ -901,7 +918,7 @@ void SoftRenderer::render(const GameState &gs) {
                 // Basic Lambert * point radiance with inverse square; treat sample weight as average over sphere area samples
                 Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity;
                 // Normalization when multiple lights (keep total similar); also divide by samples
-                if (lightCount>1) emitColor = emitColor / (float)lightCount;
+                if (totalLightCount>1) emitColor = emitColor / (float)totalLightCount;
                 float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
                 float brdfScale = 1.0f;
                 if (config.pbrEnable) {
@@ -924,6 +941,54 @@ void SoftRenderer::render(const GameState &gs) {
                 } else {
                     // Legacy behavior (no 1/pi so brighter)
                     lightAccum = lightAccum + emitColor * (ndotl * atten);
+                }
+            }
+            lightAccum = lightAccum / (float)shadowSamples;
+            sum = sum + lightAccum;
+        }
+        // Sample paddle lights (rectangular area lights)
+        for (size_t pi=0; pi<paddleLights.size(); ++pi) {
+            const PaddleLight& plight = paddleLights[pi];
+            Vec3 lightAccum{0,0,0};
+            for (int s=0; s<shadowSamples; ++s) {
+                // Sample random point on paddle rectangle (in XY plane, Z~0)
+                float u1 = rng1(seed);
+                float u2 = rng1(seed);
+                float offsetX = (u1 - 0.5f) * 2.0f * plight.halfX;
+                float offsetY = (u2 - 0.5f) * 2.0f * plight.halfY;
+                Vec3 lightPt = plight.center + Vec3{offsetX, offsetY, 0.0f};
+                Vec3 L = lightPt - pos;
+                float dist2 = dot(L,L);
+                if (UNLIKELY(dist2 < 1e-12f)) continue;
+                float inv_dist = rsqrt_fast(dist2);
+                float dist = dist2 * inv_dist;
+                L = L * inv_dist;
+                float ndotl = dot(n,L);
+                if (UNLIKELY(ndotl <= 0.0f)) continue;
+                // Check occlusion (shadow test against scene geometry)
+                if (occludedToPoint(pos + n*0.002f, lightPt, -1)) continue;
+                // Paddle emission color (warm orange/yellow matching ball)
+                Vec3 paddleEmit{2.2f,1.4f,0.8f}; paddleEmit = paddleEmit * config.paddleEmissiveIntensity;
+                if (totalLightCount>1) paddleEmit = paddleEmit / (float)totalLightCount;
+                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
+                float brdfScale = 1.0f;
+                if (config.pbrEnable) {
+                    if (!isMetal) {
+                        brdfScale = 1.0f/3.1415926f;
+                        lightAccum = lightAccum + paddleEmit * (ndotl * atten * brdfScale);
+                    } else {
+                        Vec3 V = norm(viewDir * -1.0f);
+                        Vec3 H = norm(V + L);
+                        float VoH = std::max(0.0f, dot(V,H));
+                        Vec3 F0{0.86f,0.88f,0.94f};
+                        Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
+                        float rough = std::clamp(config.metallicRoughness, 0.0f, 1.0f);
+                        float gloss = 1.0f - 0.7f*rough;
+                        Vec3 spec = F * (ndotl * gloss);
+                        lightAccum = lightAccum + paddleEmit * (spec * atten);
+                    }
+                } else {
+                    lightAccum = lightAccum + paddleEmit * (ndotl * atten);
                 }
             }
             lightAccum = lightAccum / (float)shadowSamples;
@@ -1022,6 +1087,14 @@ void SoftRenderer::render(const GameState &gs) {
                     if (direct.x>0||direct.y>0||direct.z>0) { pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * direct; contribCount[r.pixelIndex]++; }
                 } else if (best.mat==2) {
                     // Paddle material: slightly tinted metal with diffuse under-layer
+                    // Emit paddle light if configured (terminate path like emissive ball)
+                    if (config.paddleEmissiveIntensity > 0.0f) {
+                        Vec3 paddleEmit{2.2f,1.4f,0.8f}; paddleEmit = paddleEmit * config.paddleEmissiveIntensity;
+                        pixelAccum[r.pixelIndex] = pixelAccum[r.pixelIndex] + r.throughput * paddleEmit;
+                        contribCount[r.pixelIndex]++;
+                        r.alive=false; continue;
+                    }
+                    // Non-emissive paddle: metallic reflection
                     Vec3 paddleColor{0.25f,0.32f,0.6f};
                     Vec3 n = best.n; float cosi = dot(r.rd, n); r.rd = r.rd - n*(2.0f*cosi);
                     float rough = config.metallicRoughness; float uA,uB; rng2(r.seed,uA,uB); float r1 = 2*3.1415926f*uA; float r2=uB; float r2s=std::sqrt(r2);
@@ -1342,6 +1415,14 @@ void SoftRenderer::render(const GameState &gs) {
                                 col = fma_add(col, throughput * direct, 1.0f);  // Phase 4: FMA 
                             }
                             else if (best.mat==2) {
+                                // Emit paddle light if configured (terminate path like emissive ball)
+                                if (config.paddleEmissiveIntensity > 0.0f) {
+                                    Vec3 paddleEmit{2.2f,1.4f,0.8f}; 
+                                    paddleEmit=paddleEmit*config.paddleEmissiveIntensity; 
+                                    col = fma_add(col, throughput * paddleEmit, 1.0f);  // col + throughput*paddleEmit
+                                    break; // Terminate path
+                                }
+                                // Non-emissive paddle: metallic reflection
                                 Vec3 paddleColor{0.25f,0.32f,0.6f}; 
                                 Vec3 n=best.n; 
                                 float cosi=dot(rd,n); 

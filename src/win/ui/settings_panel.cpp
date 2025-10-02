@@ -53,7 +53,8 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		{L"Max Bounces", &settings_->pt_max_bounces, 1, 8, 1},
 		{L"Internal Scale %", &settings_->pt_internal_scale, 1, 100, 1},
 		{L"Metal Roughness %", &settings_->pt_roughness, 0, 100, 1},
-		{L"Emissive %", &settings_->pt_emissive, 1, 500, 1},
+		{L"Ball Emissive %", &settings_->pt_emissive, 1, 5000, 1},
+		{L"Paddle Emissive %", &settings_->pt_paddle_emissive, 0, 5000, 1},
 		{L"Accum Alpha %", &settings_->pt_accum_alpha, 0, 100, 1},
 		{L"Denoise %", &settings_->pt_denoise_strength, 0, 100, 1},
 		{L"Soft Shadow Spp", &settings_->pt_soft_shadow_samples, 1, 64, 1},
@@ -155,9 +156,10 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 				case 1: return L"Max Bounces: Path depth cap.";
 				case 2: return L"Internal Scale: Internal resolution %.";
 				case 3: return L"Metal Roughness: Highlight spread.";
-				case 4: return L"Emissive %: Light intensity.";
-				case 5: return L"Accum Alpha: History blend factor.";
-				case 6: return L"Denoise %: 3x3 blur strength.";
+				case 4: return L"Ball Emissive %: Ball light intensity (1-5000).";
+				case 5: return L"Paddle Emissive %: Paddle light intensity (0-5000, 0=off).";
+				case 6: return L"Accum Alpha: History blend factor.";
+				case 7: return L"Denoise %: 3x3 blur strength.";
 				// case 7 removed (segment samples)
 			}
 		} else if(idx==idxForce_()) return L"Force 1 Ray: RaysPerFrame treated as per‑pixel.";

@@ -13,6 +13,7 @@ static void applySettings(SoftRenderer* r, SRConfig& cur, const Settings& s){
 	apply(cur.internalScalePct, s.pt_internal_scale);
 	apply(cur.metallicRoughness, s.pt_roughness/100.0f);
 	apply(cur.emissiveIntensity, s.pt_emissive/100.0f);
+	apply(cur.paddleEmissiveIntensity, s.pt_paddle_emissive/100.0f);
 	apply(cur.accumAlpha, s.pt_accum_alpha/100.0f);
 	apply(cur.denoiseStrength, s.pt_denoise_strength/100.0f);
 	apply(cur.forceFullPixelRays, s.pt_force_full_pixel_rays!=0);

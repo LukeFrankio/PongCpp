@@ -57,8 +57,8 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 	int hoverIndex = -1;
 	int baseX = winW/2 - (int)(170*ui_scale + 0.5);
 	// 0 control,1 AI diff,2 renderer,3 game mode,4 player mode,5 physics mode,6 HUD gameplay,7 HUD record,8 path settings,9 start,10 scores,11 quit,12 recording
-	const int kCount = 13;
-	int ys[kCount] = { (int)(120 * ui_scale + 0.5), (int)(165 * ui_scale + 0.5), (int)(210 * ui_scale + 0.5), (int)(255 * ui_scale + 0.5), (int)(300 * ui_scale + 0.5), (int)(345 * ui_scale + 0.5), (int)(390 * ui_scale + 0.5), (int)(435 * ui_scale + 0.5), (int)(480 * ui_scale + 0.5), (int)(525 * ui_scale + 0.5), (int)(570 * ui_scale + 0.5), (int)(615 * ui_scale + 0.5), (int)(660 * ui_scale + 0.5) };
+	const int kCount = 14;
+	int ys[kCount] = { (int)(120 * ui_scale + 0.5), (int)(165 * ui_scale + 0.5), (int)(210 * ui_scale + 0.5), (int)(255 * ui_scale + 0.5), (int)(300 * ui_scale + 0.5), (int)(345 * ui_scale + 0.5), (int)(390 * ui_scale + 0.5), (int)(435 * ui_scale + 0.5), (int)(480 * ui_scale + 0.5), (int)(525 * ui_scale + 0.5), (int)(570 * ui_scale + 0.5), (int)(615 * ui_scale + 0.5), (int)(660 * ui_scale + 0.5), (int)(705 * ui_scale + 0.5) };
 	for (int i=0;i<kCount;i++) {
 	int pad = (int)((10.0 * ui_scale > 6.0)? (10.0 * ui_scale) : 6.0);
 	int wboxRef = (int)(260.0 * ui_scale + 0.5);
@@ -99,13 +99,14 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 	drawOption(3, gmLabel, baseX, ys[3]);
 	drawOption(4, pmodeLabel, baseX, ys[4]);
 	drawOption(5, settings_->physics_mode?L"Physics: Physical":L"Physics: Arcade", baseX, ys[5]);
-	drawOption(6, settings_->hud_show_play?L"HUD Gameplay: ON":L"HUD Gameplay: OFF", baseX, ys[6]);
-	drawOption(7, settings_->hud_show_record?L"HUD Recording: ON":L"HUD Recording: OFF", baseX, ys[7]);
-	drawOption(8, L"Path Tracer Settings...", baseX, ys[8]);
-	drawOption(9, L"Start Game", baseX, ys[9]);
-	drawOption(10, L"Manage High Scores", baseX, ys[10]);
-	drawOption(11, L"Quit", baseX, ys[11]);
-	drawOption(12, settings_->recording_mode ? L"Recording Mode: ON" : L"Recording Mode: OFF", baseX, ys[12]);
+	drawOption(6, settings_->speed_mode?L"Speed Mode: I AM SPEED":L"Speed Mode: Normal", baseX, ys[6]);
+	drawOption(7, settings_->hud_show_play?L"HUD Gameplay: ON":L"HUD Gameplay: OFF", baseX, ys[7]);
+	drawOption(8, settings_->hud_show_record?L"HUD Recording: ON":L"HUD Recording: OFF", baseX, ys[8]);
+	drawOption(9, L"Path Tracer Settings...", baseX, ys[9]);
+	drawOption(10, L"Start Game", baseX, ys[10]);
+	drawOption(11, L"Manage High Scores", baseX, ys[11]);
+	drawOption(12, L"Quit", baseX, ys[12]);
+	drawOption(13, settings_->recording_mode ? L"Recording Mode: ON" : L"Recording Mode: OFF", baseX, ys[13]);
 
 	// High scores right side (top 5)
 	SetTextColor(memDC, RGB(180,180,220));
@@ -124,7 +125,7 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 		menu_click_index = hoverIndex;
 	}
 
-	if (input.just_pressed(VK_DOWN)) { menuIndex++; if (menuIndex>12) menuIndex=12; }
+	if (input.just_pressed(VK_DOWN)) { menuIndex++; if (menuIndex>13) menuIndex=13; }
 	if (input.just_pressed(VK_UP)) { menuIndex--; if (menuIndex<0) menuIndex=0; }
 	if (input.just_pressed(VK_LEFT)) {
 		if (menuIndex==0) { ctrlMode = 0; settings_->control_mode = 0; result.settingsChanged = true; }
@@ -133,8 +134,9 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 		else if (menuIndex==3) { if (settings_->game_mode>0) { settings_->game_mode--; result.settingsChanged = true; } }
 		else if (menuIndex==4) { if (settings_->player_mode>0) { settings_->player_mode--; result.settingsChanged = true; } }
 		else if (menuIndex==5) { settings_->physics_mode = 0; result.settingsChanged = true; }
-		else if (menuIndex==6) { settings_->hud_show_play = 0; result.settingsChanged = true; }
-		else if (menuIndex==7) { settings_->hud_show_record = 0; result.settingsChanged = true; }
+		else if (menuIndex==6) { settings_->speed_mode = 0; result.settingsChanged = true; }
+		else if (menuIndex==7) { settings_->hud_show_play = 0; result.settingsChanged = true; }
+		else if (menuIndex==8) { settings_->hud_show_record = 0; result.settingsChanged = true; }
 	}
 	if (input.just_pressed(VK_RIGHT)) {
 		if (menuIndex==0) { ctrlMode = 1; settings_->control_mode = 1; result.settingsChanged = true; }
@@ -143,17 +145,18 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 		else if (menuIndex==3) { if (settings_->game_mode<4) { settings_->game_mode++; result.settingsChanged = true; } }
 		else if (menuIndex==4) { if (settings_->player_mode<2) { settings_->player_mode++; result.settingsChanged = true; } }
 		else if (menuIndex==5) { settings_->physics_mode = 1; result.settingsChanged = true; }
-		else if (menuIndex==6) { settings_->hud_show_play = 1; result.settingsChanged = true; }
-		else if (menuIndex==7) { settings_->hud_show_record = 1; result.settingsChanged = true; }
+		else if (menuIndex==6) { settings_->speed_mode = 1; result.settingsChanged = true; }
+		else if (menuIndex==7) { settings_->hud_show_play = 1; result.settingsChanged = true; }
+		else if (menuIndex==8) { settings_->hud_show_record = 1; result.settingsChanged = true; }
 	}
 	if (input.just_pressed(VK_ESCAPE)) { result.action = MenuAction::Quit; }
 	if (input.just_pressed(VK_RETURN)) {
 		switch(menuIndex) {
-			case 8: if (rendererMode==1) result.action = MenuAction::Settings; break; // path tracer settings
-			case 9: result.action = MenuAction::Play; break;
-			case 10: result.action = MenuAction::Scores; break;
-			case 11: result.action = MenuAction::Quit; break;
-			case 12: settings_->recording_mode = settings_->recording_mode ? 0 : 1; result.settingsChanged = true; break;
+			case 9: if (rendererMode==1) result.action = MenuAction::Settings; break; // path tracer settings
+			case 10: result.action = MenuAction::Play; break;
+			case 11: result.action = MenuAction::Scores; break;
+			case 12: result.action = MenuAction::Quit; break;
+			case 13: settings_->recording_mode = settings_->recording_mode ? 0 : 1; result.settingsChanged = true; break;
 		}
 	}
 
@@ -167,13 +170,14 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 			case 3: settings_->game_mode = (settings_->game_mode+1)%5; result.settingsChanged = true; break;
 			case 4: settings_->player_mode = (settings_->player_mode+1)%3; result.settingsChanged = true; break;
 			case 5: settings_->physics_mode = settings_->physics_mode?0:1; result.settingsChanged = true; break;
-			case 6: settings_->hud_show_play = settings_->hud_show_play?0:1; result.settingsChanged = true; break;
-			case 7: settings_->hud_show_record = settings_->hud_show_record?0:1; result.settingsChanged = true; break;
-			case 8: if (rendererMode==1) result.action = MenuAction::Settings; break;
-			case 9: result.action = MenuAction::Play; break;
-			case 10: result.action = MenuAction::Scores; break;
-			case 11: result.action = MenuAction::Quit; break;
-			case 12: settings_->recording_mode = settings_->recording_mode ? 0 : 1; result.settingsChanged = true; break;
+			case 6: settings_->speed_mode = settings_->speed_mode?0:1; result.settingsChanged = true; break;
+			case 7: settings_->hud_show_play = settings_->hud_show_play?0:1; result.settingsChanged = true; break;
+			case 8: settings_->hud_show_record = settings_->hud_show_record?0:1; result.settingsChanged = true; break;
+			case 9: if (rendererMode==1) result.action = MenuAction::Settings; break;
+			case 10: result.action = MenuAction::Play; break;
+			case 11: result.action = MenuAction::Scores; break;
+			case 12: result.action = MenuAction::Quit; break;
+			case 13: settings_->recording_mode = settings_->recording_mode ? 0 : 1; result.settingsChanged = true; break;
 		}
 	}
 
@@ -187,13 +191,14 @@ MainMenuView::Result MainMenuView::updateAndRender(HDC memDC,
 			case 3: tip = L"Select game mode"; break;
 			case 4: tip = L"Select player/AI configuration"; break;
 			case 5: tip = L"Toggle physics model"; break;
-			case 6: tip = L"Toggle HUD during gameplay"; break;
-			case 7: tip = L"Toggle HUD while recording"; break;
-			case 8: tip = (rendererMode==1)?L"Open path tracer settings":L"(Enable path tracer to edit settings)"; break;
-			case 9: tip = L"Start the game"; break;
-			case 10: tip = L"View / delete high scores"; break;
-			case 11: tip = L"Exit the game"; break;
-			case 12: tip = settings_->recording_mode ? L"Disable recording mode" : L"Enable recording mode (records gameplay)"; break;
+			case 6: tip = L"Toggle speed mode (no max speed, auto-acceleration)"; break;
+			case 7: tip = L"Toggle HUD during gameplay"; break;
+			case 8: tip = L"Toggle HUD while recording"; break;
+			case 9: tip = (rendererMode==1)?L"Open path tracer settings":L"(Enable path tracer to edit settings)"; break;
+			case 10: tip = L"Start the game"; break;
+			case 11: tip = L"View / delete high scores"; break;
+			case 12: tip = L"Exit the game"; break;
+			case 13: tip = settings_->recording_mode ? L"Disable recording mode" : L"Enable recording mode (records gameplay)"; break;
 		}
 		if(!tip.empty()) {
 			SIZE ts{0,0}; GetTextExtentPoint32W(memDC, tip.c_str(), (int)tip.size(), &ts);

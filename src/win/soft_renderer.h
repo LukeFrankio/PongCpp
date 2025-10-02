@@ -13,7 +13,7 @@
  *      maxBounces: path depth (1..8)
  *      internalScalePct: internal resolution percentage (25..100)
  *      metallicRoughness: 0 (perfect mirror) .. 1 (fully rough)
- *      emissiveIntensity: scales emissive ball radiance (0.1 .. 5)
+ *      emissiveIntensity: scales emissive ball radiance (no limit)
  *      accumAlpha: temporal accumulation factor (EMA) (0.01 .. 0.9)
  *      denoiseStrength: blend factor for 3x3 box denoiser (0..1)
  *      forceFullPixelRays: interpret raysPerFrame as rays per pixel instead of a global budget
@@ -44,7 +44,8 @@ struct SRConfig {
 
     // Material / lighting tuning
     float metallicRoughness = 0.2f;       // 0 mirror .. 1 rough
-    float emissiveIntensity = 1.0f;       // Multiplier on emissive ball radiance (0.1 .. 5)
+    float emissiveIntensity = 2.5f;       // Multiplier on emissive ball radiance (no hard limit)
+    float paddleEmissiveIntensity = 0.0f; // Multiplier on paddle emissive radiance (0=no emission, no hard limit)
 
     // Denoising / accumulation
     float accumAlpha = 0.1f;              // Temporal EMA factor (0.01 .. 0.9)

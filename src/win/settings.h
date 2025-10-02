@@ -27,7 +27,8 @@ struct Settings {
     int pt_max_bounces = 1;           ///< Maximum bounces (1-8 reasonable)
     int pt_internal_scale = 10;       ///< Internal resolution percentage (25..100)
     int pt_roughness = 15;            ///< Metallic roughness percent (0..100)
-    int pt_emissive = 100;            ///< Emissive intensity percent for ball (50..300 mapped)
+    int pt_emissive = 100;            ///< Emissive intensity percent for ball (1..5000)
+    int pt_paddle_emissive = 0;       ///< Emissive intensity percent for paddles (0..5000, 0=no emission)
     int pt_accum_alpha = 75;          ///< Temporal accumulation alpha percent (1..50 => 0.01..0.50)
     int pt_denoise_strength = 25;     ///< Spatial denoise strength percent (0..100)
     int pt_force_full_pixel_rays = 1; ///< 1 = force at least 1 primary ray per pixel at internal resolution
@@ -51,6 +52,7 @@ struct Settings {
     int recording_fps = 60;            ///< Target recording FPS (15..60)
     // Physics / HUD
     int physics_mode = 1;              ///< 0=Arcade physics, 1=Physically-based paddle bounce
+    int speed_mode = 0;                ///< 1="I am Speed" mode: no max speed, auto-acceleration
     int hud_show_play = 1;             ///< 1=Show HUD during normal gameplay
     int hud_show_record = 1;           ///< 1=Show HUD overlays while recording
 };

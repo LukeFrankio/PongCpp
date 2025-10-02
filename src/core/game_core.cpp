@@ -54,6 +54,10 @@ void GameCore::reset() {
     // Store initial paddle positions for velocity calculations
     prev_left_y = s.left_y;
     prev_right_y = s.right_y;
+    
+    // Reset speed mode tracking
+    low_vx_time = 0.0;
+    prev_abs_vx = std::abs(vx);
 }
 
 void GameCore::update(double dt) {
@@ -126,13 +130,18 @@ void GameCore::update(double dt) {
                     double scale = target / newSpeed;
                     bvx *= scale; bvy *= scale;
                 }
-                double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                // Speed mode: no cap, else normal cap
+                if (!speed_mode) {
+                    double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                }
             } else {
                 // Arcade: simple additive influence and mild speed-up
                 bvx += tx * (tangent_strength * contact_offset * 0.5);
                 bvy += ty * (tangent_strength * contact_offset * 0.5);
                 bvx *= 1.02; bvy *= 1.02;
-                double maxsp = 80.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                if (!speed_mode) {
+                    double maxsp = 80.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                }
             }
             return true;
         }
@@ -173,7 +182,7 @@ void GameCore::update(double dt) {
                 if (contact_offset > 1.0) contact_offset = 1.0; if (contact_offset < -1.0) contact_offset = -1.0;
                 double tx = -ny, ty = nx;
                 double tangential = tangent_strength * contact_offset + paddle_influence * paddle_v;
-                if (physical_mode){
+                if (physical_mode) {
                     double preSpeed = std::sqrt(bvx*bvx + bvy*bvy);
                     bvx += tx * tangential; bvy += ty * tangential;
                     double newSpeed = std::sqrt(bvx*bvx + bvy*bvy);
@@ -181,7 +190,10 @@ void GameCore::update(double dt) {
                         double target = preSpeed * restitution;
                         double scale = target / newSpeed; bvx*=scale; bvy*=scale;
                     }
-                    double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                    // Speed mode: no cap, else normal cap
+                    if (!speed_mode) {
+                        double maxsp = 90.0; double spc = std::sqrt(bvx*bvx + bvy*bvy); if (spc > maxsp) { double sc = maxsp / spc; bvx*=sc; bvy*=sc; }
+                    }
                 } else {
                     bvx += tx * (tangent_strength * contact_offset * 0.5);
                     bvy += ty * (tangent_strength * contact_offset * 0.5);
@@ -244,9 +256,11 @@ void GameCore::update(double dt) {
         if (b.x < l_px_right + 1.5) {
             if (handle_paddle_local(b.x, b.y, b.vx, b.vy, l_px_left, l_px_right, s.left_y, s.left_y + s.paddle_h, true)) {
                 if (b.vx < 0) b.vx = fabs(b.vx);
-                double sp = sqrt(b.vx*b.vx + b.vy*b.vy);
-                double maxsp = 80.0;
-                if (sp > maxsp) { b.vx *= maxsp/sp; b.vy *= maxsp/sp; }
+                if (!speed_mode) {
+                    double sp = sqrt(b.vx*b.vx + b.vy*b.vy);
+                    double maxsp = 80.0;
+                    if (sp > maxsp) { b.vx *= maxsp/sp; b.vy *= maxsp/sp; }
+                }
             } else if (b.x < -1.0) {
                 s.score_right++;
                 b.x = s.gw/2.0; b.y = s.gh/2.0; b.vx = 20.0; b.vy = 10.0;
@@ -257,9 +271,11 @@ void GameCore::update(double dt) {
         if (b.x > r_px_left - 1.5) {
             if (handle_paddle_local(b.x, b.y, b.vx, b.vy, r_px_left, r_px_right, s.right_y, s.right_y + s.paddle_h, false)) {
                 if (b.vx > 0) b.vx = -fabs(b.vx);
-                double sp = sqrt(b.vx*b.vx + b.vy*b.vy);
-                double maxsp = 80.0;
-                if (sp > maxsp) { b.vx *= maxsp/sp; b.vy *= maxsp/sp; }
+                if (!speed_mode) {
+                    double sp = sqrt(b.vx*b.vx + b.vy*b.vy);
+                    double maxsp = 80.0;
+                    if (sp > maxsp) { b.vx *= maxsp/sp; b.vy *= maxsp/sp; }
+                }
             } else if (b.x > s.gw + 1.0) {
                 s.score_left++;
                 b.x = s.gw/2.0; b.y = s.gh/2.0; b.vx = -20.0; b.vy = -10.0;
@@ -381,6 +397,27 @@ void GameCore::update(double dt) {
     if (s.right_y < 0) s.right_y = 0;
     if (s.right_y + s.paddle_h > s.gh) s.right_y = s.gh - s.paddle_h;
 
+    // Speed mode: accelerate if horizontal velocity is low for too long
+    if (speed_mode && !s.balls.empty()) {
+        double current_abs_vx = std::abs(s.balls[0].vx);
+        const double vx_threshold = 15.0; // threshold for "low" horizontal velocity
+        const double accel_time_threshold = 0.5; // seconds of low vx before acceleration kicks in
+        const double accel_boost = 1.15; // 15% speed boost per trigger
+        
+        if (current_abs_vx < vx_threshold) {
+            low_vx_time += dt;
+            if (low_vx_time >= accel_time_threshold) {
+                // Boost horizontal velocity while preserving direction
+                double dir = (s.balls[0].vx >= 0) ? 1.0 : -1.0;
+                s.balls[0].vx *= accel_boost;
+                low_vx_time = 0.0; // reset timer after boost
+            }
+        } else {
+            low_vx_time = 0.0; // reset if velocity is healthy
+        }
+        prev_abs_vx = current_abs_vx;
+    }
+    
     // Mirror primary ball for legacy fields
     if (!s.balls.empty()) { s.ball_x = s.balls[0].x; s.ball_y = s.balls[0].y; vx = s.balls[0].vx; vy = s.balls[0].vy; }
 

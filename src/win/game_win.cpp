@@ -179,6 +179,8 @@ int run_win_pong(HINSTANCE inst, int show) {
                         }
                         // Apply physics mode toggle (0 arcade, 1 physical)
                         session.core().set_physical_mode(settings.physics_mode==1);
+                        // Apply speed mode toggle (0 normal, 1 speed mode)
+                        session.core().set_speed_mode(settings.speed_mode==1);
                         // Transition to gameplay: clear backbuffer and reset PT history so menu isn't blended over
                         st.ui_mode=0; 
                         HBRUSH black=(HBRUSH)GetStockObject(BLACK_BRUSH); RECT clr{0,0,winW,winH}; FillRect(st.memDC,&clr,black);

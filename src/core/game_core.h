@@ -210,6 +210,13 @@ private:
     bool left_ai_enabled = false;   ///< When true, left paddle is AI-controlled
     bool right_ai_enabled = true;   ///< When true, right paddle is AI-controlled
     bool physical_mode = true;      ///< Use physically-based bounce (true) or legacy arcade (false)
+    bool speed_mode = false;        ///< "I am Speed" mode: no max speed, auto-acceleration if stalling
+    
+    /// @name Speed Mode State Tracking
+    /// @{
+    double low_vx_time = 0.0;       ///< Accumulated time ball has low horizontal velocity
+    double prev_abs_vx = 0.0;       ///< Previous absolute horizontal velocity for tracking
+    /// @}
     
     /// @name Paddle Physics State
     /// @{
@@ -232,4 +239,6 @@ public:
     bool right_ai() const { return right_ai_enabled; }
     void set_physical_mode(bool on){ physical_mode = on; }
     bool is_physical() const { return physical_mode; }
+    void set_speed_mode(bool on){ speed_mode = on; if(!on) low_vx_time = 0.0; }
+    bool is_speed_mode() const { return speed_mode; }
 };

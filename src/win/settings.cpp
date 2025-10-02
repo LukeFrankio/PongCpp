@@ -48,6 +48,7 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("pt_internal_scale", s.pt_internal_scale);
     extractInt("pt_roughness", s.pt_roughness);
     extractInt("pt_emissive", s.pt_emissive);
+    extractInt("pt_paddle_emissive", s.pt_paddle_emissive);
     extractInt("pt_accum_alpha", s.pt_accum_alpha);
     extractInt("pt_denoise_strength", s.pt_denoise_strength);
     extractInt("pt_force_full_pixel_rays", s.pt_force_full_pixel_rays);
@@ -67,9 +68,11 @@ Settings SettingsManager::load(const std::wstring &path) {
         extractInt("player_mode", s.player_mode);
         extractInt("recording_fps", s.recording_fps);
         extractInt("physics_mode", s.physics_mode);
+        extractInt("speed_mode", s.speed_mode);
         extractInt("hud_show_play", s.hud_show_play);
         extractInt("hud_show_record", s.hud_show_record);
         if(s.physics_mode<0||s.physics_mode>1) s.physics_mode=1;
+        if(s.speed_mode<0||s.speed_mode>1) s.speed_mode=0;
         s.hud_show_play = s.hud_show_play?1:0;
         s.hud_show_record = s.hud_show_record?1:0;
         if(s.recording_fps < 15) s.recording_fps = 15; else if(s.recording_fps > 60) s.recording_fps = 60;
@@ -96,6 +99,7 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"pt_internal_scale\": " << s.pt_internal_scale << ",\n";
     ofs << "  \"pt_roughness\": " << s.pt_roughness << ",\n";
     ofs << "  \"pt_emissive\": " << s.pt_emissive << ",\n";
+    ofs << "  \"pt_paddle_emissive\": " << s.pt_paddle_emissive << ",\n";
     ofs << "  \"pt_accum_alpha\": " << s.pt_accum_alpha << ",\n";
     ofs << "  \"pt_denoise_strength\": " << s.pt_denoise_strength << ",\n";
     ofs << "  \"pt_force_full_pixel_rays\": " << s.pt_force_full_pixel_rays << ",\n";
@@ -113,6 +117,7 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
         ofs << "  \"player_mode\": " << s.player_mode << ",\n";
         ofs << "  \"recording_fps\": " << s.recording_fps << ",\n";
         ofs << "  \"physics_mode\": " << s.physics_mode << ",\n";
+        ofs << "  \"speed_mode\": " << s.speed_mode << ",\n";
         ofs << "  \"hud_show_play\": " << s.hud_show_play << ",\n";
         ofs << "  \"hud_show_record\": " << s.hud_show_record << "\n";
     ofs << "}\n";
