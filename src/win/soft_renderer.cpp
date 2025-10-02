@@ -13,6 +13,7 @@
 #include <atomic>
 #include <mutex>
 #include <cctype>
+#include <functional> // for std::function
 
 // Include SSE intrinsics for fast math
 #if defined(_MSC_VER)
@@ -29,6 +30,18 @@
 #else
     #define LIKELY(x)   (x)
     #define UNLIKELY(x) (x)
+#endif
+
+// Phase 6: Force inline for hot functions
+#if defined(_MSC_VER)
+    #define FORCE_INLINE __forceinline
+    #define FORCE_INLINE_ATTRIB
+#elif defined(__GNUC__) || defined(__clang__)
+    #define FORCE_INLINE __attribute__((always_inline)) inline
+    #define FORCE_INLINE_ATTRIB __attribute__((always_inline))
+#else
+    #define FORCE_INLINE inline
+    #define FORCE_INLINE_ATTRIB
 #endif
 
 // Adaptive threading state (global to translation unit)
@@ -567,7 +580,24 @@ void SoftRenderer::updateInternalResolution() {
 }
 
 // Ray primitive intersections
-struct Hit { float t; Vec3 n; Vec3 pos; int mat; }; // mat: 0=diffuse wall,1=emissive,2=metal (paddles)
+struct Hit { float t; Vec3 n; Vec3 pos; int mat; int objId = -1; }; // mat: 0=diffuse wall,1=emissive,2=metal (paddles); objId: object identifier for caching
+
+// Phase 8: BVH (Bounding Volume Hierarchy) structures - defined early to avoid forward declaration issues
+struct BVHPrimitive {
+    Vec3 bmin, bmax;    // AABB bounds
+    int objType;        // 0=ball, 1=paddle, 2=obstacle
+    int objIndex;       // Index into respective array
+    int mat;            // Material ID
+    int objId;          // Global object ID for caching
+};
+
+struct BVHNode {
+    Vec3 bmin, bmax;    // Node bounds
+    int leftChild;      // Index to left child node (-1 if leaf)
+    int rightChild;     // Index to right child node (-1 if leaf)
+    int primStart;      // First primitive index (for leaves)
+    int primCount;      // Number of primitives (0 if interior node)
+};
 
 // Phase 1: Optimized sphere intersection with fast sqrt
 static bool intersectSphere(Vec3 ro, Vec3 rd, Vec3 c, float r, float tMax, Hit &hit, int mat) {
@@ -589,7 +619,7 @@ static bool intersectSphere(Vec3 ro, Vec3 rd, Vec3 c, float r, float tMax, Hit &
 }
 
 // Phase 1: Optimized plane intersection with branch hints
-static bool intersectPlane(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, float tMax, Hit &hit, int mat) {
+static FORCE_INLINE bool intersectPlane(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, float tMax, Hit &hit, int mat) {
     float denom = dot(rd,n);
     if (UNLIKELY(std::fabs(denom) < 1e-5f)) return false;
     float t = dot(p - ro, n) / denom;
@@ -853,7 +883,7 @@ static inline void intersectPlane4(const RayPacket4 &rays,
 }
 
 // Axis aligned thin box (only front/back + sides) simplified: treat as slab intersection returning surface normal of hit face.
-static bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, float tMax, Hit &hit, int mat) {
+static FORCE_INLINE bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, float tMax, Hit &hit, int mat) {
     float tmin = 0.001f, tmax = tMax;
     Vec3 n = {0,0,0};
     // X
@@ -935,6 +965,32 @@ void SoftRenderer::render(const GameState &gs) {
     }
     float paddleThickness = 0.05f;
     
+    // Phase 6: Pre-compute scene bounds for spatial culling
+    struct SceneBounds {
+        Vec3 leftPaddleMin, leftPaddleMax;
+        Vec3 rightPaddleMin, rightPaddleMax;
+        Vec3 topPaddleMin, topPaddleMax;
+        Vec3 bottomPaddleMin, bottomPaddleMax;
+        float leftPaddleBoundRadius, rightPaddleBoundRadius;
+        float topPaddleBoundRadius, bottomPaddleBoundRadius;
+    };
+    SceneBounds bounds;
+    bounds.leftPaddleMin = leftCenter - Vec3{paddleHalfX, paddleHalfY, paddleThickness};
+    bounds.leftPaddleMax = leftCenter + Vec3{paddleHalfX, paddleHalfY, paddleThickness};
+    bounds.rightPaddleMin = rightCenter - Vec3{paddleHalfX, paddleHalfY, paddleThickness};
+    bounds.rightPaddleMax = rightCenter + Vec3{paddleHalfX, paddleHalfY, paddleThickness};
+    bounds.leftPaddleBoundRadius = sqrt_fast(paddleHalfX*paddleHalfX + paddleHalfY*paddleHalfY + paddleThickness*paddleThickness);
+    bounds.rightPaddleBoundRadius = bounds.leftPaddleBoundRadius;
+    
+    if (useHoriz) {
+        bounds.topPaddleMin = topCenter - Vec3{horizHalfX, horizHalfY, horizThickness};
+        bounds.topPaddleMax = topCenter + Vec3{horizHalfX, horizHalfY, horizThickness};
+        bounds.bottomPaddleMin = bottomCenter - Vec3{horizHalfX, horizHalfY, horizThickness};
+        bounds.bottomPaddleMax = bottomCenter + Vec3{horizHalfX, horizHalfY, horizThickness};
+        bounds.topPaddleBoundRadius = sqrt_fast(horizHalfX*horizHalfX + horizHalfY*horizHalfY + horizThickness*horizThickness);
+        bounds.bottomPaddleBoundRadius = bounds.topPaddleBoundRadius;
+    }
+    
     // Paddle lights: collect paddle positions as area light sources if paddle emission enabled
     struct PaddleLight { Vec3 center; float halfX; float halfY; };
     std::vector<PaddleLight> paddleLights;
@@ -947,12 +1003,261 @@ void SoftRenderer::render(const GameState &gs) {
             paddleLights.push_back({bottomCenter, horizHalfX, horizHalfY});
         }
     }
+    
+    // Phase 6: Pre-compute material properties (avoid per-ray calculations)
+    struct MaterialProps {
+        Vec3 diffuseAlbedo;
+        Vec3 paddleColor;
+        Vec3 emitColor;
+        Vec3 paddleEmitColor;
+        float roughness;
+        float invPi;
+    };
+    MaterialProps materials;
+    materials.diffuseAlbedo = Vec3{0.62f, 0.64f, 0.67f};
+    materials.paddleColor = Vec3{0.25f, 0.32f, 0.6f};
+    materials.emitColor = Vec3{2.2f, 1.4f, 0.8f} * config.emissiveIntensity;
+    materials.paddleEmitColor = Vec3{2.2f, 1.4f, 0.8f} * config.paddleEmissiveIntensity;
+    materials.roughness = config.metallicRoughness;
+    materials.invPi = 1.0f / 3.1415926f;
+    
+    // Phase 8: FORCE_INLINE AABB ray intersection test for BVH traversal (defined early)
+    auto intersectAABB = [](const Vec3& ro, const Vec3& rd, const Vec3& bmin, const Vec3& bmax, float tMax) FORCE_INLINE_ATTRIB -> bool {
+        // Slab test (Andrew Kensler's optimized version)
+        float tx1 = (bmin.x - ro.x) / rd.x;
+        float tx2 = (bmax.x - ro.x) / rd.x;
+        float tmin = std::min(tx1, tx2);
+        float tmax = std::max(tx1, tx2);
+        
+        float ty1 = (bmin.y - ro.y) / rd.y;
+        float ty2 = (bmax.y - ro.y) / rd.y;
+        tmin = std::max(tmin, std::min(ty1, ty2));
+        tmax = std::min(tmax, std::max(ty1, ty2));
+        
+        float tz1 = (bmin.z - ro.z) / rd.z;
+        float tz2 = (bmax.z - ro.z) / rd.z;
+        tmin = std::max(tmin, std::min(tz1, tz2));
+        tmax = std::min(tmax, std::max(tz1, tz2));
+        
+        return tmax >= std::max(0.0f, tmin) && tmin < tMax;
+    };
+    
+    // Phase 8: Build BVH primitives list (using indices, not pointers, to avoid corruption)
+    std::vector<BVHPrimitive> bvhPrimitives;
+    bvhPrimitives.reserve(ballCenters.size() + 4 + obsBoxes.size());  // Pre-allocate to avoid reallocation
+    
+    // Add balls to BVH
+    for (size_t i = 0; i < ballCenters.size(); ++i) {
+        BVHPrimitive prim;
+        prim.bmin = ballCenters[i] - Vec3{ballRs[i], ballRs[i], ballRs[i]};
+        prim.bmax = ballCenters[i] + Vec3{ballRs[i], ballRs[i], ballRs[i]};
+        prim.objType = 0;  // ball
+        prim.objIndex = (int)i;
+        prim.mat = 1;  // emissive
+        prim.objId = (int)i;
+        bvhPrimitives.push_back(prim);
+    }
+    
+    // Add paddles to BVH
+    BVHPrimitive leftPaddle;
+    leftPaddle.bmin = bounds.leftPaddleMin;
+    leftPaddle.bmax = bounds.leftPaddleMax;
+    leftPaddle.objType = 1; leftPaddle.objIndex = 0; leftPaddle.mat = 2; leftPaddle.objId = 100;
+    bvhPrimitives.push_back(leftPaddle);
+    
+    BVHPrimitive rightPaddle;
+    rightPaddle.bmin = bounds.rightPaddleMin;
+    rightPaddle.bmax = bounds.rightPaddleMax;
+    rightPaddle.objType = 1; rightPaddle.objIndex = 1; rightPaddle.mat = 2; rightPaddle.objId = 101;
+    bvhPrimitives.push_back(rightPaddle);
+    
+    if (useHoriz) {
+        BVHPrimitive topPaddle;
+        topPaddle.bmin = bounds.topPaddleMin;
+        topPaddle.bmax = bounds.topPaddleMax;
+        topPaddle.objType = 1; topPaddle.objIndex = 2; topPaddle.mat = 2; topPaddle.objId = 102;
+        bvhPrimitives.push_back(topPaddle);
+        
+        BVHPrimitive bottomPaddle;
+        bottomPaddle.bmin = bounds.bottomPaddleMin;
+        bottomPaddle.bmax = bounds.bottomPaddleMax;
+        bottomPaddle.objType = 1; bottomPaddle.objIndex = 3; bottomPaddle.mat = 2; bottomPaddle.objId = 103;
+        bvhPrimitives.push_back(bottomPaddle);
+    }
+    
+    // Add obstacles to BVH
+    if (useObs) {
+        for (size_t i = 0; i < obsBoxes.size(); ++i) {
+            BVHPrimitive prim;
+            prim.bmin = obsBoxes[i].bmin;
+            prim.bmax = obsBoxes[i].bmax;
+            prim.objType = 2;  // obstacle
+            prim.objIndex = (int)i;
+            prim.mat = 0;  // diffuse
+            prim.objId = 300 + (int)i;
+            bvhPrimitives.push_back(prim);
+        }
+    }
+    
+    // Phase 8: Build BVH tree (median split, simple and fast for per-frame rebuild)
+    std::vector<BVHNode> bvhNodes;
+    int bvhRootIndex = -1;
+    
+    if (!bvhPrimitives.empty()) {
+        // Reserve space for nodes (worst case: 2*N-1 nodes for N primitives)
+        bvhNodes.reserve(bvhPrimitives.size() * 2);
+        
+        // Recursive BVH build function using median split
+        std::function<int(int, int)> buildBVH = [&](int start, int end) -> int {
+            int nodeIdx = (int)bvhNodes.size();
+            bvhNodes.push_back(BVHNode());
+            BVHNode& node = bvhNodes[nodeIdx];
+            
+            // Compute bounds for this node
+            node.bmin = Vec3{1e30f, 1e30f, 1e30f};
+            node.bmax = Vec3{-1e30f, -1e30f, -1e30f};
+            for (int i = start; i < end; ++i) {
+                node.bmin.x = std::min(node.bmin.x, bvhPrimitives[i].bmin.x);
+                node.bmin.y = std::min(node.bmin.y, bvhPrimitives[i].bmin.y);
+                node.bmin.z = std::min(node.bmin.z, bvhPrimitives[i].bmin.z);
+                node.bmax.x = std::max(node.bmax.x, bvhPrimitives[i].bmax.x);
+                node.bmax.y = std::max(node.bmax.y, bvhPrimitives[i].bmax.y);
+                node.bmax.z = std::max(node.bmax.z, bvhPrimitives[i].bmax.z);
+            }
+            
+            int count = end - start;
+            if (count <= 2) {  // Leaf node (max 2 primitives per leaf for better performance)
+                node.leftChild = -1;
+                node.rightChild = -1;
+                node.primStart = start;
+                node.primCount = count;
+                return nodeIdx;
+            }
+            
+            // Interior node: split along longest axis at median
+            Vec3 extent = node.bmax - node.bmin;
+            int axis = 0;
+            if (extent.y > extent.x) axis = 1;
+            float longestExtent = (axis == 0) ? extent.x : extent.y;
+            if (extent.z > longestExtent) axis = 2;
+            
+            // Sort primitives along axis (median split)
+            std::sort(bvhPrimitives.begin() + start, bvhPrimitives.begin() + end,
+                [axis](const BVHPrimitive& a, const BVHPrimitive& b) {
+                    Vec3 ca = (a.bmin + a.bmax) * 0.5f;
+                    Vec3 cb = (b.bmin + b.bmax) * 0.5f;
+                    if (axis == 0) return ca.x < cb.x;
+                    else if (axis == 1) return ca.y < cb.y;
+                    else return ca.z < cb.z;
+                });
+            
+            int mid = start + count / 2;
+            node.primStart = -1;
+            node.primCount = 0;
+            
+            // Build children (safe because we reserved space and indices won't change)
+            int leftIdx = buildBVH(start, mid);
+            int rightIdx = buildBVH(mid, end);
+            
+            // Update node pointers (safe to reference now that children are built)
+            bvhNodes[nodeIdx].leftChild = leftIdx;
+            bvhNodes[nodeIdx].rightChild = rightIdx;
+            
+            return nodeIdx;
+        };
+        
+        bvhRootIndex = buildBVH(0, (int)bvhPrimitives.size());
+    }
 
+    // Phase 7: Frustum culling structures
+    struct FrustumPlane { Vec3 normal; float d; };  // Plane equation: dot(n, p) + d = 0
+    struct Frustum { FrustumPlane planes[6]; };  // left, right, top, bottom, near, far
+    
+    // Phase 7: Intersection cache for temporal coherence
+    struct IntersectionCache {
+        int mat = -1;       // Material ID (-1 = invalid)
+        float t = 0.0f;     // Distance to hit
+        Vec3 pos{0,0,0};    // Hit position
+        Vec3 n{0,0,0};      // Hit normal
+        int objId = -1;     // Object identifier (for balls: index, paddles: 100+, planes: 200+, obstacles: 300+)
+    };
+    
     // Camera setup
     Vec3 camPos = {0,0,-5.0f};
     float fov = 60.0f * 3.1415926f/180.0f;
     float tanF = std::tan(fov*0.5f);
 
+    // Phase 7: Calculate frustum planes for culling
+    Frustum frustum;
+    if (!config.useOrtho) {
+        // Perspective frustum
+        float halfHNear = tanF * 0.1f;  // Near plane at z=0.1 (camPos.z=-5, looking at +z)
+        float halfWNear = halfHNear * ((rtH>0)? (float)rtW/(float)rtH : 1.0f);
+        Vec3 forward{0, 0, 1};  // Camera looks along +Z
+        Vec3 right{1, 0, 0};
+        Vec3 up{0, 1, 0};
+        Vec3 fc = camPos + forward * 0.1f;  // Near plane center
+        
+        // Left plane (points inward)
+        Vec3 leftNormal = norm(cross(up, fc + right * (-halfWNear) - camPos));
+        frustum.planes[0] = {leftNormal, -dot(leftNormal, camPos)};
+        
+        // Right plane (points inward)
+        Vec3 rightNormal = norm(cross(fc + right * halfWNear - camPos, up));
+        frustum.planes[1] = {rightNormal, -dot(rightNormal, camPos)};
+        
+        // Top plane (points inward)
+        Vec3 topNormal = norm(cross(right, fc + up * halfHNear - camPos));
+        frustum.planes[2] = {topNormal, -dot(topNormal, camPos)};
+        
+        // Bottom plane (points inward)
+        Vec3 bottomNormal = norm(cross(fc + up * (-halfHNear) - camPos, right));
+        frustum.planes[3] = {bottomNormal, -dot(bottomNormal, camPos)};
+        
+        // Near plane (points inward = forward)
+        frustum.planes[4] = {forward, -dot(forward, fc)};
+        
+        // Far plane (points inward = -forward, at z=10)
+        Vec3 farCenter = camPos + forward * 15.0f;  // Far plane at 15 units
+        frustum.planes[5] = {forward * -1.0f, -dot(forward * -1.0f, farCenter)};
+    } else {
+        // Orthographic frustum (simpler, axis-aligned)
+        // View bounds: x=[-2,2], y=[-1.5,1.5], z=[-1,10]
+        frustum.planes[0] = {Vec3{1,0,0}, 2.0f};      // left: x >= -2
+        frustum.planes[1] = {Vec3{-1,0,0}, 2.0f};     // right: x <= 2
+        frustum.planes[2] = {Vec3{0,-1,0}, 1.6f};     // top: y <= 1.6
+        frustum.planes[3] = {Vec3{0,1,0}, 1.6f};      // bottom: y >= -1.6
+        frustum.planes[4] = {Vec3{0,0,1}, 1.0f};      // near: z >= -1
+        frustum.planes[5] = {Vec3{0,0,-1}, 10.0f};    // far: z <= 10
+    }
+    
+    // Phase 7: FORCE_INLINE AABB vs Frustum test (conservative, returns true if possibly visible)
+    auto testAABBFrustum = [](const Vec3& bmin, const Vec3& bmax, const Frustum& f) FORCE_INLINE_ATTRIB -> bool {
+        // Test all 6 planes; if AABB is fully outside any plane, it's culled
+        for (int i = 0; i < 6; ++i) {
+            const FrustumPlane& plane = f.planes[i];
+            // Get positive vertex (farthest along plane normal)
+            Vec3 pVertex{
+                plane.normal.x > 0 ? bmax.x : bmin.x,
+                plane.normal.y > 0 ? bmax.y : bmin.y,
+                plane.normal.z > 0 ? bmax.z : bmin.z
+            };
+            // If positive vertex is outside (negative side), AABB is fully outside
+            if (dot(plane.normal, pVertex) + plane.d < 0.0f) return false;
+        }
+        return true;  // AABB is at least partially inside frustum
+    };
+    
+    // Phase 7: Initialize intersection cache (per-pixel)
+    static std::vector<IntersectionCache> intersectionCache;
+    static int cacheW = 0, cacheH = 0;
+    if (cacheW != rtW || cacheH != rtH) {
+        intersectionCache.resize(rtW * rtH);
+        cacheW = rtW; cacheH = rtH;
+        // Invalidate all cache entries on resize
+        for (auto& c : intersectionCache) c.mat = -1;
+    }
+    
     // For each pixel (low-res) produce color
     frameCounter++;
     stats_ = SRStats{}; // reset (extended stats fields zeroed)
@@ -1079,15 +1384,15 @@ void SoftRenderer::render(const GameState &gs) {
                 float ndotl = dot(n,L); 
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
                 if (occludedToPoint(pos + n*0.002f, spherePt, li)) continue;
-                // Basic Lambert * point radiance with inverse square; treat sample weight as average over sphere area samples
-                Vec3 emitColor{2.2f,1.4f,0.8f}; emitColor = emitColor * config.emissiveIntensity;
+                // Phase 6: Use pre-computed emissive color and material properties
+                Vec3 emitColor = materials.emitColor;
                 // Normalization when multiple lights (keep total similar); also divide by samples
                 if (totalLightCount>1) emitColor = emitColor / (float)totalLightCount;
                 float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
                 float brdfScale = 1.0f;
                 if (config.pbrEnable) {
                     if (!isMetal) {
-                        brdfScale = 1.0f/3.1415926f; // Lambert diffuse (albedo = 0.62..0.67 encoded in throughput earlier)
+                        brdfScale = materials.invPi;  // Phase 6: Pre-computed
                         lightAccum = lightAccum + emitColor * (ndotl * atten * brdfScale);
                     } else {
                         // Simple specular (Schlick Fresnel * NdotL) with roughness attenuation
@@ -1096,7 +1401,7 @@ void SoftRenderer::render(const GameState &gs) {
                         float VoH = std::max(0.0f, dot(V,H));
                         Vec3 F0{0.86f,0.88f,0.94f};
                         Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
-                        float rough = std::clamp(config.metallicRoughness, 0.0f, 1.0f);
+                        float rough = materials.roughness;  // Phase 6: Pre-computed
                         float gloss = 1.0f - 0.7f*rough; // simple energy loss with roughness
                         // Very approximate microfacet: we skip full D/G terms and just modulate by ndotl and a gloss factor to keep energy bounded.
                         Vec3 spec = F * (ndotl * gloss); // F already handles view-angle energy shift
@@ -1160,14 +1465,14 @@ void SoftRenderer::render(const GameState &gs) {
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
                 // Check occlusion (shadow test against scene geometry)
                 if (occludedToPoint(pos + n*0.002f, lightPt, -1)) continue;
-                // Paddle emission color (warm orange/yellow matching ball)
-                Vec3 paddleEmit{2.2f,1.4f,0.8f}; paddleEmit = paddleEmit * config.paddleEmissiveIntensity;
+                // Phase 6: Use pre-computed paddle emission color
+                Vec3 paddleEmit = materials.paddleEmitColor;
                 if (totalLightCount>1) paddleEmit = paddleEmit / (float)totalLightCount;
                 float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
                 float brdfScale = 1.0f;
                 if (config.pbrEnable) {
                     if (!isMetal) {
-                        brdfScale = 1.0f/3.1415926f;
+                        brdfScale = materials.invPi;  // Phase 6: Pre-computed
                         lightAccum = lightAccum + paddleEmit * (ndotl * atten * brdfScale);
                     } else {
                         Vec3 V = norm(viewDir * -1.0f);
@@ -1175,7 +1480,7 @@ void SoftRenderer::render(const GameState &gs) {
                         float VoH = std::max(0.0f, dot(V,H));
                         Vec3 F0{0.86f,0.88f,0.94f};
                         Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
-                        float rough = std::clamp(config.metallicRoughness, 0.0f, 1.0f);
+                        float rough = materials.roughness;  // Phase 6: Pre-computed
                         float gloss = 1.0f - 0.7f*rough;
                         Vec3 spec = F * (ndotl * gloss);
                         lightAccum = lightAccum + paddleEmit * (spec * atten);
@@ -1588,59 +1893,158 @@ void SoftRenderer::render(const GameState &gs) {
                             rd = norm(Vec3{px,py,1}); ro = camPos;
                         }
                         Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
+                        
+                        // Phase 7: Try intersection cache on first bounce (temporal coherence)
+                        IntersectionCache* cache = &intersectionCache[y * rtW + x];
+                        bool cacheValid = (bounce == 0 && cache->mat >= 0);
+                        
                         for (; bounce<config.maxBounces; ++bounce) {
                             Hit best; best.t=1e30f; bool hit=false; Hit tmp;
                             
+                            // Phase 7: Test cached object first (if valid and first bounce)
+                            if (cacheValid && bounce == 0) {
+                                // Test cached object first for temporal coherence
+                                bool cacheHit = false;
+                                if (cache->mat == 0) {  // Plane
+                                    // Identify which plane from cache->objId
+                                    if (cache->objId == 200) {  // Top plane
+                                        if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; cacheHit=true; }
+                                    } else if (cache->objId == 201) {  // Bottom plane
+                                        if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; cacheHit=true; }
+                                    } else if (cache->objId == 202) {  // Back plane
+                                        if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; cacheHit=true; }
+                                    }
+                                } else if (cache->mat == 1) {  // Ball
+                                    int bi = cache->objId;
+                                    if (bi >= 0 && bi < (int)ballCenters.size()) {
+                                        if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; cacheHit=true; }
+                                    }
+                                } else if (cache->mat == 2) {  // Paddle
+                                    if (cache->objId == 100) {  // Left paddle
+                                        if (intersectBox(ro,rd, bounds.leftPaddleMin, bounds.leftPaddleMax, best.t, tmp, 2)){ best=tmp; cacheHit=true; }
+                                    } else if (cache->objId == 101) {  // Right paddle
+                                        if (intersectBox(ro,rd, bounds.rightPaddleMin, bounds.rightPaddleMax, best.t, tmp, 2)){ best=tmp; cacheHit=true; }
+                                    } else if (cache->objId == 102 && useHoriz) {  // Top paddle
+                                        if (intersectBox(ro,rd, bounds.topPaddleMin, bounds.topPaddleMax, best.t, tmp, 2)){ best=tmp; cacheHit=true; }
+                                    } else if (cache->objId == 103 && useHoriz) {  // Bottom paddle
+                                        if (intersectBox(ro,rd, bounds.bottomPaddleMin, bounds.bottomPaddleMax, best.t, tmp, 2)){ best=tmp; cacheHit=true; }
+                                    }
+                                }
+                                if (cacheHit) { hit = true; }
+                                cacheValid = false;  // Disable cache for remaining tests this frame
+                            }
+                            
                             // Test planes (always visible from both sides)
-                            if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                            if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                            if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
+                            if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; best.objId=200; hit=true; }
+                            if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; best.objId=201; hit=true; }
+                            if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; best.objId=202; hit=true; }
                             
-                            // Test balls (sphere intersection is cheap)
-                            for(size_t bi=0; bi<ballCenters.size(); ++bi){ 
-                                if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ 
-                                    best=tmp; hit=true; 
-                                } 
-                            }
-                            
-                            // Test paddles with cheap direction culling (box tests are expensive)
-                            // Left paddle is at x ~= -2, right paddle at x ~= +2
-                            if (rd.x < 0.0f || ro.x < 0.0f) {  // Ray moving left or already on left side
-                                if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 
-                                               leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ 
-                                    best=tmp; hit=true; 
-                                }
-                            }
-                            if (rd.x > 0.0f || ro.x > 0.0f) {  // Ray moving right or already on right side
-                                if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 
-                                               rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ 
-                                    best=tmp; hit=true; 
-                                }
-                            }
-                            
-                            if (useHoriz) {
-                                // Top/bottom paddles with similar culling
-                                if (rd.y < 0.0f || ro.y > 0.0f) {  // Moving down or above center
-                                    if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, 
-                                                   topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ 
-                                        best=tmp; hit=true; 
+                            // Phase 8: BVH traversal for balls, paddles, obstacles (replaces linear tests)
+                            if (bvhRootIndex >= 0) {
+                                // Stack-based BVH traversal (no recursion)
+                                int stack[64];  // Enough for depth ~32 BVH
+                                int stackPtr = 0;
+                                stack[stackPtr++] = bvhRootIndex;
+                                
+                                while (stackPtr > 0) {
+                                    int nodeIdx = stack[--stackPtr];
+                                    const BVHNode& node = bvhNodes[nodeIdx];
+                                    
+                                    // Test ray against node bounds
+                                    if (!intersectAABB(ro, rd, node.bmin, node.bmax, best.t)) continue;
+                                    
+                                    if (node.primCount > 0) {
+                                        // Leaf node: test primitives
+                                        for (int i = 0; i < node.primCount; ++i) {
+                                            const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
+                                            
+                                            if (prim.objType == 0) {
+                                                // Ball (sphere)
+                                                int bi = prim.objIndex;
+                                                if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                    best = tmp;
+                                                    best.objId = prim.objId;
+                                                    hit = true;
+                                                }
+                                            } else if (prim.objType == 1) {
+                                                // Paddle (box) - apply direction culling
+                                                bool testPaddle = false;
+                                                if (prim.objIndex == 0) {  // Left paddle
+                                                    testPaddle = (rd.x < 0.0f || ro.x < 0.0f);
+                                                } else if (prim.objIndex == 1) {  // Right paddle
+                                                    testPaddle = (rd.x > 0.0f || ro.x > 0.0f);
+                                                } else if (prim.objIndex == 2) {  // Top paddle
+                                                    testPaddle = (rd.y < 0.0f || ro.y > 0.0f);
+                                                } else if (prim.objIndex == 3) {  // Bottom paddle
+                                                    testPaddle = (rd.y > 0.0f || ro.y < 0.0f);
+                                                }
+                                                
+                                                if (testPaddle && intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                    best = tmp;
+                                                    best.objId = prim.objId;
+                                                    hit = true;
+                                                }
+                                            } else if (prim.objType == 2) {
+                                                // Obstacle (box)
+                                                if (intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                    best = tmp;
+                                                    best.objId = prim.objId;
+                                                    hit = true;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // Interior node: push children onto stack (closer child last for better early rejection)
+                                        float t1 = 1e30f, t2 = 1e30f;
+                                        if (node.leftChild >= 0) {
+                                            const BVHNode& left = bvhNodes[node.leftChild];
+                                            if (intersectAABB(ro, rd, left.bmin, left.bmax, best.t)) {
+                                                // Estimate distance to left child
+                                                Vec3 center = (left.bmin + left.bmax) * 0.5f;
+                                                Vec3 diff = center - ro;
+                                                t1 = dot(diff, rd);
+                                            }
+                                        }
+                                        if (node.rightChild >= 0) {
+                                            const BVHNode& right = bvhNodes[node.rightChild];
+                                            if (intersectAABB(ro, rd, right.bmin, right.bmax, best.t)) {
+                                                Vec3 center = (right.bmin + right.bmax) * 0.5f;
+                                                Vec3 diff = center - ro;
+                                                t2 = dot(diff, rd);
+                                            }
+                                        }
+                                        
+                                        // Push farther child first, closer child second (so closer is popped first)
+                                        if (t1 < 1e30f && t2 < 1e30f) {
+                                            if (t1 < t2) {
+                                                stack[stackPtr++] = node.rightChild;
+                                                stack[stackPtr++] = node.leftChild;
+                                            } else {
+                                                stack[stackPtr++] = node.leftChild;
+                                                stack[stackPtr++] = node.rightChild;
+                                            }
+                                        } else if (t1 < 1e30f) {
+                                            stack[stackPtr++] = node.leftChild;
+                                        } else if (t2 < 1e30f) {
+                                            stack[stackPtr++] = node.rightChild;
+                                        }
                                     }
                                 }
-                                if (rd.y > 0.0f || ro.y < 0.0f) {  // Moving up or below center
-                                    if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, 
-                                                   bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ 
-                                        best=tmp; hit=true; 
-                                    }
+                            }
+                            
+                            // Phase 7: Update cache on first bounce
+                            if (bounce == 0) {
+                                if (hit) {
+                                    cache->mat = best.mat;
+                                    cache->t = best.t;
+                                    cache->pos = best.pos;
+                                    cache->n = best.n;
+                                    cache->objId = best.objId;
+                                } else {
+                                    cache->mat = -1;  // Invalidate cache (ray missed scene)
                                 }
                             }
                             
-                            if (useObs) { 
-                                for (auto &bx : obsBoxes) {
-                                    if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ 
-                                        best=tmp; hit=true; 
-                                    } 
-                                }
-                            }
                             if (!hit) { 
                                 // Phase 4: FMA for background blend
                                 float t = 0.5f*(rd.y+1.0f); 
@@ -1652,16 +2056,14 @@ void SoftRenderer::render(const GameState &gs) {
                                 break; 
                             }
                             if (best.mat==1) { 
-                                // Phase 4: FMA for emissive color accumulation
-                                Vec3 emit{2.2f,1.4f,0.8f}; 
-                                emit=emit*config.emissiveIntensity; 
-                                col = fma_add(col, throughput * emit, 1.0f);  // col + throughput*emit
+                                // Phase 6: Use pre-computed emissive color
+                                col = fma_add(col, throughput * materials.emitColor, 1.0f);
                                 terminated=true; 
                                 break; 
                             }
-                            // Phase 1: Early throughput termination before shading
+                            // Phase 6: More aggressive early throughput termination (5e-3f for faster convergence)
                             float maxT = max_component(throughput);
-                            if (UNLIKELY(maxT < 1e-3f)) { 
+                            if (UNLIKELY(maxT < 5e-3f)) { 
                                 earlyExitAccum++; 
                                 terminated = true;
                                 break; 
@@ -1693,24 +2095,21 @@ void SoftRenderer::render(const GameState &gs) {
                                 } 
                                 ro = fma_add(best.pos, best.n, 0.002f);  // Phase 4: FMA for ray offset
                                 rd=d; 
-                                throughput=throughput*Vec3{0.62f,0.64f,0.67f}; 
+                                throughput=throughput*materials.diffuseAlbedo;  // Phase 6: Use pre-computed albedo
                                 Vec3 direct = sampleDirect(best.pos, n, rd, seed, false); 
                                 col = fma_add(col, throughput * direct, 1.0f);  // Phase 4: FMA 
                             }
                             else if (best.mat==2) {
                                 // Emit paddle light if configured (terminate path like emissive ball)
                                 if (config.paddleEmissiveIntensity > 0.0f) {
-                                    Vec3 paddleEmit{2.2f,1.4f,0.8f}; 
-                                    paddleEmit=paddleEmit*config.paddleEmissiveIntensity; 
-                                    col = fma_add(col, throughput * paddleEmit, 1.0f);  // col + throughput*paddleEmit
+                                    col = fma_add(col, throughput * materials.paddleEmitColor, 1.0f);  // Phase 6: Pre-computed
                                     break; // Terminate path
                                 }
-                                // Non-emissive paddle: metallic reflection
-                                Vec3 paddleColor{0.25f,0.32f,0.6f}; 
+                                // Phase 6: Non-emissive paddle: metallic reflection with pre-computed properties
                                 Vec3 n=best.n; 
                                 float cosi=dot(rd,n); 
                                 rd = rd - n*(2.0f*cosi); 
-                                float rough=config.metallicRoughness; 
+                                float rough=materials.roughness;  // Phase 6: Pre-computed
                                 float uA,uB; rng2(seed,uA,uB); 
                                 // Phase 1: Use fast trig
                                 float r1=6.28318531f*uA; 
@@ -1727,28 +2126,29 @@ void SoftRenderer::render(const GameState &gs) {
                                 Vec3 fuzz=norm(u*(c1*r2s)+v*(s1*r2s)+w*sq); 
                                 rd=norm(fma_madd(rd, 1.0f-rough, fuzz, rough));  // Phase 4: FMA for roughness blend
                                 ro=fma_add(best.pos, rd, 0.002f);  // Phase 4: FMA for ray offset 
-                                throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + paddleColor*0.5f); 
-                                Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * paddleColor; 
+                                throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + materials.paddleColor*0.5f);  // Phase 6: Pre-computed
+                                Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;  // Phase 6: Pre-computed
                                 col = fma_add(col, throughput * direct, 1.0f);  // Phase 4: FMA 
                             }
-                            // Phase 1: Optimized early exit and Russian roulette
+                            // Phase 6: Smarter Russian Roulette with BRDF-weighted probability
                             if (best.mat==0 || best.mat==2) { 
                                 float maxT = max_component(throughput); 
-                                if (UNLIKELY(maxT < 1e-3f)) { 
+                                if (UNLIKELY(maxT < 5e-3f)) {  // Phase 6: More aggressive threshold
                                     earlyExitAccum++; 
                                     bounce++; 
                                     break; 
                                 } 
                                 if (LIKELY(config.rouletteEnable) && bounce >= config.rouletteStartBounce) { 
-                                    // Phase 1: Optimized probability calculation
-                                    float p = std::max(config.rouletteMinProb, std::min(maxT, 0.95f)); 
+                                    // Phase 6: Smarter probability based on throughput and BRDF contribution
+                                    // Higher throughput = higher survival probability (up to 95%)
+                                    float baseProbability = std::max(config.rouletteMinProb, std::min(maxT * 1.2f, 0.95f));
                                     float rrand = rng1(seed);
-                                    if (UNLIKELY(rrand > p)){ 
+                                    if (UNLIKELY(rrand > baseProbability)){ 
                                         rouletteAccum++; 
                                         bounce++; 
                                         break; 
                                     } 
-                                    throughput = throughput / p; 
+                                    throughput = throughput / baseProbability; 
                                 } 
                             }
                         }
