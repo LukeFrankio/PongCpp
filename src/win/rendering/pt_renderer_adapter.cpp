@@ -37,12 +37,21 @@ static void applySettings(SoftRenderer* r, SRConfig& cur, const Settings& s){
 	if(cur.accumAlpha < 0.01f){ cur.accumAlpha = 0.01f; changed=true; }
 	if(cur.softShadowSamples < 1){ cur.softShadowSamples = 1; changed=true; }
 	if(cur.softShadowSamples > 64){ cur.softShadowSamples = 64; changed=true; }
-	if(cur.lightRadiusScale < 0.1f){ cur.lightRadiusScale = 0.1f; changed=true; }
-	if(cur.lightRadiusScale > 5.0f){ cur.lightRadiusScale = 5.0f; changed=true; }
-	if(changed){ r->configure(cur); r->resetHistory(); }
-}
-
-void PTRendererAdapter::configure(const Settings& s){
+    if(cur.lightRadiusScale < 0.1f){ cur.lightRadiusScale = 0.1f; changed=true; }
+    if(cur.lightRadiusScale > 5.0f){ cur.lightRadiusScale = 5.0f; changed=true; }
+    // Phase 5: Apply optimization settings
+    apply(cur.tileSize, s.pt_tile_size);
+    apply(cur.useBlueNoise, s.pt_use_blue_noise != 0);
+    apply(cur.useCosineWeighted, s.pt_use_cosine_weighted != 0);
+    apply(cur.useStratified, s.pt_use_stratified != 0);
+    apply(cur.useHaltonSeq, s.pt_use_halton != 0);
+    apply(cur.adaptiveSoftShadows, s.pt_adaptive_shadows != 0);
+    apply(cur.useBilateralDenoise, s.pt_use_bilateral != 0);
+    apply(cur.bilateralSigmaSpace, s.pt_bilateral_sigma_space / 10.0f);
+    apply(cur.bilateralSigmaColor, s.pt_bilateral_sigma_color / 100.0f);
+    apply(cur.lightCullDistance, s.pt_light_cull_distance / 10.0f);
+    if(changed){ r->configure(cur); r->resetHistory(); }
+}void PTRendererAdapter::configure(const Settings& s){
 	if(!impl) return; if(!cfg.enablePathTracing) cfg.enablePathTracing=true; applySettings(impl,cfg,s);
 }
 void PTRendererAdapter::resize(int w,int h){ if(impl) { impl->resize(w,h); impl->resetHistory(); } }

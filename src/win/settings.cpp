@@ -119,7 +119,18 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
         ofs << "  \"physics_mode\": " << s.physics_mode << ",\n";
         ofs << "  \"speed_mode\": " << s.speed_mode << ",\n";
         ofs << "  \"hud_show_play\": " << s.hud_show_play << ",\n";
-        ofs << "  \"hud_show_record\": " << s.hud_show_record << "\n";
+        ofs << "  \"hud_show_record\": " << s.hud_show_record << ",\n";
+    // Phase 5: Save optimization settings
+    ofs << "  \"pt_tile_size\": " << s.pt_tile_size << ",\n";
+    ofs << "  \"pt_use_blue_noise\": " << s.pt_use_blue_noise << ",\n";
+    ofs << "  \"pt_use_cosine_weighted\": " << s.pt_use_cosine_weighted << ",\n";
+    ofs << "  \"pt_use_stratified\": " << s.pt_use_stratified << ",\n";
+    ofs << "  \"pt_use_halton\": " << s.pt_use_halton << ",\n";
+    ofs << "  \"pt_adaptive_shadows\": " << s.pt_adaptive_shadows << ",\n";
+    ofs << "  \"pt_use_bilateral\": " << s.pt_use_bilateral << ",\n";
+    ofs << "  \"pt_bilateral_sigma_space\": " << s.pt_bilateral_sigma_space << ",\n";
+    ofs << "  \"pt_bilateral_sigma_color\": " << s.pt_bilateral_sigma_color << ",\n";
+    ofs << "  \"pt_light_cull_distance\": " << s.pt_light_cull_distance << "\n";
     ofs << "}\n";
     return true;
 }

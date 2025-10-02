@@ -55,6 +55,17 @@ struct Settings {
     int speed_mode = 0;                ///< 1="I am Speed" mode: no max speed, auto-acceleration
     int hud_show_play = 1;             ///< 1=Show HUD during normal gameplay
     int hud_show_record = 1;           ///< 1=Show HUD overlays while recording
+    // Phase 5: Advanced sampling and rendering optimizations
+    int pt_tile_size = 16;             ///< Tile size for tile-based rendering (4-64, power of 2)
+    int pt_use_blue_noise = 1;         ///< Use blue noise sampling (1=on, 0=white noise)
+    int pt_use_cosine_weighted = 1;    ///< Use cosine-weighted hemisphere sampling (1=on, 0=uniform)
+    int pt_use_stratified = 1;         ///< Use stratified jittered sampling (1=on, 0=random)
+    int pt_use_halton = 0;             ///< Use Halton low-discrepancy sequence (1=on, slower but better)
+    int pt_adaptive_shadows = 1;       ///< Adaptive soft shadow samples (1=on, 0=fixed samples)
+    int pt_use_bilateral = 1;          ///< Use bilateral filter for denoising (1=on, 0=box blur)
+    int pt_bilateral_sigma_space = 10; ///< Bilateral spatial sigma * 10 (1-100, default 10 = 1.0)
+    int pt_bilateral_sigma_color = 10; ///< Bilateral color sigma * 100 (1-100, default 10 = 0.1)
+    int pt_light_cull_distance = 500;  ///< Light culling distance * 10 (10-10000, default 500 = 50.0)
 };
 
 /**

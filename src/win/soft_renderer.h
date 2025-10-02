@@ -68,6 +68,18 @@ struct SRConfig {
     int   softShadowSamples = 4;            // Number of importance samples per light for soft shadows (1=hard shadow)
     float lightRadiusScale = 1.0f;          // Multiplier on physical ball radius when treated as area light
     bool  pbrEnable = true;                 // Enable physically based energy terms (Lambert 1/pi, simple Fresnel, energy conservation)
+    
+    // Phase 5: Advanced sampling and rendering optimizations
+    int   tileSize = 16;                    // Tile size for tile-based rendering (8, 16, or 32 recommended for cache efficiency)
+    bool  useBlueNoise = true;              // Use blue noise sampling instead of white noise for better low-SPP quality
+    bool  useCosineWeighted = true;         // Use cosine-weighted hemisphere sampling for diffuse (2x quality improvement)
+    bool  useStratified = true;             // Use stratified jittered sampling within pixels
+    bool  useHaltonSeq = false;             // Use Halton low-discrepancy sequence (slower but better distribution)
+    bool  adaptiveSoftShadows = true;       // Adaptive soft shadow samples (1 sample if fully lit/shadowed, more for penumbra)
+    bool  useBilateralDenoise = true;       // Use bilateral filter instead of box blur (edge-preserving)
+    float bilateralSigmaSpace = 1.0f;       // Bilateral spatial sigma (pixel distance falloff)
+    float bilateralSigmaColor = 0.1f;       // Bilateral color sigma (luminance difference falloff)
+    float lightCullDistance = 50.0f;        // Distance multiplier for light culling (lights beyond this * radius are skipped)
 };
 
 // Runtime statistics for profiling / HUD overlay

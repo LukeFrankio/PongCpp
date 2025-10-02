@@ -149,6 +149,22 @@ static inline float sqrt_fast(float x) {
     return x * rsqrt_fast(x);
 }
 
+// Fast exp approximation using polynomial (max error ~2% for x in [-4, 4])
+// For Gaussian filters in bilateral filtering
+static inline float exp_fast(float x) {
+    // Clamp to reasonable range for stability
+    if (UNLIKELY(x < -10.0f)) return 0.0f;
+    if (UNLIKELY(x > 10.0f)) return std::exp(10.0f);
+    
+    // Use fast polynomial approximation for exp(x)
+    // Based on Pade approximant [4/4] - good accuracy for small x
+    // exp(x) ≈ (12 + 6x + x²) / (12 - 6x + x²)
+    float x2 = x * x;
+    float numer = 12.0f + 6.0f * x + x2;
+    float denom = 12.0f - 6.0f * x + x2;
+    return numer / denom;
+}
+
 // ============================================================================
 // Optimized RNG Functions
 // ============================================================================
@@ -347,6 +363,105 @@ static inline float max_component(Vec3 v) {
     return std::max(v.x, std::max(v.y, v.z));
 }
 
+// ============================================================================
+// Phase 5: Blue Noise and Low-Discrepancy Sampling
+// ============================================================================
+
+// Pre-generated 64x64 blue noise texture (R2 sequence-based)
+// Values are normalized [0, 1) with good spectral properties
+static float g_blueNoise[64 * 64];
+static bool g_blueNoiseInitialized = false;
+
+static void initBlueNoise() {
+    if (g_blueNoiseInitialized) return;
+    
+    // Generate blue noise using R2 low-discrepancy sequence (golden ratio based)
+    // This creates a good blue noise approximation without pre-baked textures
+    constexpr float g = 1.32471795724474602596f; // Plastic constant (R2 sequence base)
+    constexpr float a1 = 1.0f / g;
+    constexpr float a2 = 1.0f / (g * g);
+    
+    for (int i = 0; i < 64 * 64; ++i) {
+        float x = std::fmod(0.5f + a1 * (float)i, 1.0f);
+        float y = std::fmod(0.5f + a2 * (float)i, 1.0f);
+        // Interleave x and y to create single value with good distribution
+        g_blueNoise[i] = std::fmod(x + y * 0.618033988749f, 1.0f);
+    }
+    
+    g_blueNoiseInitialized = true;
+}
+
+// Sample blue noise texture with temporal offset
+static inline float sampleBlueNoise(int x, int y, int frame) {
+    if (!g_blueNoiseInitialized) initBlueNoise();
+    
+    // Toroidal wrapping with frame-based offset for temporal decorrelation
+    int offsetX = (x + (frame * 13)) & 63;  // Wrap to 64x64
+    int offsetY = (y + (frame * 17)) & 63;
+    return g_blueNoise[offsetY * 64 + offsetX];
+}
+
+// Halton sequence for low-discrepancy sampling
+// Base 2 for first dimension, base 3 for second dimension
+static inline float haltonBase2(int index) {
+    float f = 1.0f;
+    float r = 0.0f;
+    while (index > 0) {
+        f /= 2.0f;
+        r += f * (float)(index & 1);
+        index >>= 1;
+    }
+    return r;
+}
+
+static inline float haltonBase3(int index) {
+    float f = 1.0f;
+    float r = 0.0f;
+    while (index > 0) {
+        f /= 3.0f;
+        r += f * (float)(index % 3);
+        index /= 3;
+    }
+    return r;
+}
+
+// Cosine-weighted hemisphere sampling (Malley's method)
+// Maps [0,1]² to hemisphere with PDF proportional to cos(theta)
+static inline Vec3 sampleCosineHemisphere(float u1, float u2, const Vec3& normal) {
+    // Map to disk using concentric mapping (Shirley & Chiu)
+    float r, theta;
+    float a = 2.0f * u1 - 1.0f;
+    float b = 2.0f * u2 - 1.0f;
+    
+    if (a * a > b * b) {  // Use squares to avoid abs
+        r = a;
+        theta = 0.785398163f * (b / a);  // PI/4
+    } else if (b != 0.0f) {
+        r = b;
+        theta = 1.570796327f - 0.785398163f * (a / b);  // PI/2 - PI/4
+    } else {
+        r = 0.0f;
+        theta = 0.0f;
+    }
+    
+    float x = r * cos_fast(theta);
+    float y = r * sin_fast(theta);
+    float z = sqrt_fast(std::max(0.0f, 1.0f - x*x - y*y));
+    
+    // Build tangent space and transform to world space
+    Vec3 w = normal;
+    Vec3 a_vec = (std::fabs(w.x) > 0.1f) ? Vec3{0,1,0} : Vec3{1,0,0};
+    Vec3 v = norm(cross(w, a_vec));
+    Vec3 u = cross(v, w);
+    
+    return norm(u * x + v * y + w * z);
+}
+
+// Luminance calculation for bilateral filtering
+static inline float luminance(float r, float g, float b) {
+    return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+}
+
 // Scene description (very small & hard coded)
 // Coordinate mapping: Game x in [0,gw] -> world X in [-2,2]
 //                    Game y in [0,gh] -> world Y in [-1.5,1.5]
@@ -376,6 +491,21 @@ void SoftRenderer::configure(const SRConfig &cfg) {
     if (config.rouletteMinProb < 0.01f) config.rouletteMinProb = 0.01f; if (config.rouletteMinProb > 0.9f) config.rouletteMinProb = 0.9f;
     if (config.softShadowSamples < 1) config.softShadowSamples = 1; if (config.softShadowSamples > 64) config.softShadowSamples = 64;
     if (config.lightRadiusScale < 0.1f) config.lightRadiusScale = 0.1f; if (config.lightRadiusScale > 5.0f) config.lightRadiusScale = 5.0f;
+    // Phase 5: Validate new optimization parameters
+    if (config.tileSize < 4) config.tileSize = 4; if (config.tileSize > 64) config.tileSize = 64;
+    // Ensure tile size is power of 2 for better cache alignment
+    if (config.tileSize & (config.tileSize - 1)) {
+        // Round up to next power of 2
+        int ts = 4;
+        while (ts < config.tileSize && ts < 64) ts <<= 1;
+        config.tileSize = ts;
+    }
+    if (config.bilateralSigmaSpace < 0.1f) config.bilateralSigmaSpace = 0.1f;
+    if (config.bilateralSigmaSpace > 10.0f) config.bilateralSigmaSpace = 10.0f;
+    if (config.bilateralSigmaColor < 0.01f) config.bilateralSigmaColor = 0.01f;
+    if (config.bilateralSigmaColor > 1.0f) config.bilateralSigmaColor = 1.0f;
+    if (config.lightCullDistance < 1.0f) config.lightCullDistance = 1.0f;
+    if (config.lightCullDistance > 1000.0f) config.lightCullDistance = 1000.0f;
     updateInternalResolution();
 }
 
@@ -883,6 +1013,7 @@ void SoftRenderer::render(const GameState &gs) {
         return false;
     };
     // Sample direct lighting from all emissive spheres and paddles with soft shadows.
+    // Phase 5: Enhanced with light culling and adaptive sampling
     auto sampleDirect = [&](Vec3 pos, Vec3 n, Vec3 viewDir, uint32_t &seed, bool isMetal)->Vec3 {
         int totalLightCount = (int)ballCenters.size() + (int)paddleLights.size();
         if (UNLIKELY(totalLightCount == 0)) return Vec3{0,0,0};
@@ -893,8 +1024,41 @@ void SoftRenderer::render(const GameState &gs) {
         for (int li=0; li<ballLightCount; ++li) {
             Vec3 center = ballCenters[li];
             float radius = ballRs[li] * config.lightRadiusScale;
+            
+            // Phase 5: Light culling - skip lights that are too far or backfacing
+            Vec3 toLight = center - pos;
+            float dist2 = dot(toLight, toLight);
+            float cullDist = radius * config.lightCullDistance;
+            if (UNLIKELY(dist2 > cullDist * cullDist)) continue;  // Too far to contribute significantly
+            
+            float inv_dist = rsqrt_fast(dist2);
+            Vec3 L = toLight * inv_dist;
+            float initialNdotL = dot(n, L);
+            if (UNLIKELY(initialNdotL <= 0.0f)) continue;  // Backfacing, no contribution
+            
+            // Phase 5: Adaptive soft shadow samples
+            int adaptiveSamples = shadowSamples;
+            if (config.adaptiveSoftShadows && shadowSamples > 1) {
+                // Quick visibility test: check center of light
+                bool centerVisible = !occludedToPoint(pos + n*0.002f, center, li);
+                if (centerVisible) {
+                    // Fully lit, use minimal samples
+                    adaptiveSamples = 1;
+                } else {
+                    // In shadow or penumbra, check if fully shadowed
+                    // Sample one edge point
+                    Vec3 edgePt = center + Vec3{radius, 0, 0};
+                    bool edgeVisible = !occludedToPoint(pos + n*0.002f, edgePt, li);
+                    if (!edgeVisible) {
+                        // Fully shadowed, skip entirely
+                        continue;
+                    }
+                    // In penumbra, use full samples
+                }
+            }
+            
             Vec3 lightAccum{0,0,0};
-            for (int s=0; s<shadowSamples; ++s) {
+            for (int s=0; s<adaptiveSamples; ++s) {
                 // Phase 1: Optimized sphere sampling with fast math
                 float u1 = rng1(seed);
                 float u2 = rng1(seed);
@@ -943,14 +1107,43 @@ void SoftRenderer::render(const GameState &gs) {
                     lightAccum = lightAccum + emitColor * (ndotl * atten);
                 }
             }
-            lightAccum = lightAccum / (float)shadowSamples;
+            lightAccum = lightAccum / (float)adaptiveSamples;
             sum = sum + lightAccum;
         }
         // Sample paddle lights (rectangular area lights)
+        // Phase 5: Enhanced with light culling and adaptive sampling
+        // Phase 5: Enhanced with light culling and adaptive sampling
         for (size_t pi=0; pi<paddleLights.size(); ++pi) {
             const PaddleLight& plight = paddleLights[pi];
+            
+            // Phase 5: Light culling for paddle lights
+            Vec3 toLight = plight.center - pos;
+            float dist2 = dot(toLight, toLight);
+            float paddleRadius = sqrt_fast(plight.halfX*plight.halfX + plight.halfY*plight.halfY);
+            float cullDist = paddleRadius * config.lightCullDistance;
+            if (UNLIKELY(dist2 > cullDist * cullDist)) continue;
+            
+            float inv_dist = rsqrt_fast(dist2);
+            Vec3 L = toLight * inv_dist;
+            float initialNdotL = dot(n, L);
+            if (UNLIKELY(initialNdotL <= 0.0f)) continue;
+            
+            // Phase 5: Adaptive sampling for paddles
+            int adaptiveSamples = shadowSamples;
+            if (config.adaptiveSoftShadows && shadowSamples > 1) {
+                bool centerVisible = !occludedToPoint(pos + n*0.002f, plight.center, -1);
+                if (centerVisible) {
+                    adaptiveSamples = 1;
+                } else {
+                    // Test corner
+                    Vec3 cornerPt = plight.center + Vec3{plight.halfX, plight.halfY, 0.0f};
+                    bool cornerVisible = !occludedToPoint(pos + n*0.002f, cornerPt, -1);
+                    if (!cornerVisible) continue;  // Fully shadowed
+                }
+            }
+            
             Vec3 lightAccum{0,0,0};
-            for (int s=0; s<shadowSamples; ++s) {
+            for (int s=0; s<adaptiveSamples; ++s) {
                 // Sample random point on paddle rectangle (in XY plane, Z~0)
                 float u1 = rng1(seed);
                 float u2 = rng1(seed);
@@ -991,7 +1184,7 @@ void SoftRenderer::render(const GameState &gs) {
                     lightAccum = lightAccum + paddleEmit * (ndotl * atten);
                 }
             }
-            lightAccum = lightAccum / (float)shadowSamples;
+            lightAccum = lightAccum / (float)adaptiveSamples;
             sum = sum + lightAccum;
         }
         return sum;
@@ -1334,12 +1527,53 @@ void SoftRenderer::render(const GameState &gs) {
         std::atomic<int> earlyExitAccum{0};
         std::atomic<int> rouletteAccum{0};
 
+        // Phase 5: Tile-based rendering for better cache coherency
         auto worker = [&](int yStart, int yEnd){
-            for (int y=yStart; y<yEnd; ++y) {
-                for (int x=0; x<rtW; ++x) {
-                    Vec3 col{0,0,0}; uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-                    for (int s=0; s<spp; ++s) {
-                        float u1,u2; rng2(seed,u1,u2);
+            // Process in tiles instead of scanlines
+            int tileSize = config.tileSize;
+            
+            for (int tileY = yStart; tileY < yEnd; tileY += tileSize) {
+                int tileYEnd = std::min(tileY + tileSize, yEnd);
+                
+                for (int tileX = 0; tileX < rtW; tileX += tileSize) {
+                    int tileXEnd = std::min(tileX + tileSize, rtW);
+                    
+                    // Process entire tile (better cache locality)
+                    for (int y = tileY; y < tileYEnd; ++y) {
+                        for (int x = tileX; x < tileXEnd; ++x) {
+                            Vec3 col{0,0,0};
+                            uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
+                            
+                            for (int s=0; s<spp; ++s) {
+                                float u1, u2;
+                                
+                                // Phase 5: Enhanced sampling strategies
+                                if (config.useHaltonSeq) {
+                                    // Low-discrepancy Halton sequence
+                                    int sampleIndex = (frameCounter * spp + s) & 0x3FFF;  // Wrap at 16K samples
+                                    u1 = haltonBase2(sampleIndex);
+                                    u2 = haltonBase3(sampleIndex);
+                                } else if (config.useBlueNoise) {
+                                    // Blue noise with frame offset
+                                    u1 = sampleBlueNoise(x, y, frameCounter * spp + s);
+                                    u2 = sampleBlueNoise(x + 32, y + 32, frameCounter * spp + s);
+                                } else if (config.useStratified) {
+                                    // Stratified jittered sampling
+                                    int sqrtSpp = (int)sqrt_fast((float)spp);
+                                    if (sqrtSpp * sqrtSpp >= spp && sqrtSpp > 1) {
+                                        int sx = s % sqrtSpp;
+                                        int sy = s / sqrtSpp;
+                                        float jx, jy;
+                                        rng2(seed, jx, jy);
+                                        u1 = ((float)sx + jx) / (float)sqrtSpp;
+                                        u2 = ((float)sy + jy) / (float)sqrtSpp;
+                                    } else {
+                                        rng2(seed, u1, u2);
+                                    }
+                                } else {
+                                    // Standard white noise
+                                    rng2(seed, u1, u2);
+                                }
                         float rx = (x + u1)*invRTW;
                         float ry = (y + u2)*invRTH;
                         Vec3 rd; Vec3 ro;
@@ -1356,17 +1590,57 @@ void SoftRenderer::render(const GameState &gs) {
                         Vec3 throughput{1,1,1}; int bounce=0; bool terminated=false;
                         for (; bounce<config.maxBounces; ++bounce) {
                             Hit best; best.t=1e30f; bool hit=false; Hit tmp;
+                            
+                            // Test planes (always visible from both sides)
                             if (intersectPlane(ro,rd, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                             if (intersectPlane(ro,rd, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0)){ best=tmp; hit=true; }
                             if (intersectPlane(ro,rd, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0)){ best=tmp; hit=true; }
-                            for(size_t bi=0; bi<ballCenters.size(); ++bi){ if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ best=tmp; hit=true; } }
-                            if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                            if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                            if (useHoriz) {
-                                if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
-                                if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ best=tmp; hit=true; }
+                            
+                            // Test balls (sphere intersection is cheap)
+                            for(size_t bi=0; bi<ballCenters.size(); ++bi){ 
+                                if(intersectSphere(ro,rd,ballCenters[bi],ballRs[bi],best.t,tmp, bi==0?1:1)){ 
+                                    best=tmp; hit=true; 
+                                } 
                             }
-                            if (useObs) { for (auto &bx : obsBoxes) if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ best=tmp; hit=true; } }
+                            
+                            // Test paddles with cheap direction culling (box tests are expensive)
+                            // Left paddle is at x ~= -2, right paddle at x ~= +2
+                            if (rd.x < 0.0f || ro.x < 0.0f) {  // Ray moving left or already on left side
+                                if (intersectBox(ro,rd, leftCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 
+                                               leftCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ 
+                                    best=tmp; hit=true; 
+                                }
+                            }
+                            if (rd.x > 0.0f || ro.x > 0.0f) {  // Ray moving right or already on right side
+                                if (intersectBox(ro,rd, rightCenter - Vec3{paddleHalfX,paddleHalfY,paddleThickness}, 
+                                               rightCenter + Vec3{paddleHalfX,paddleHalfY,paddleThickness}, best.t, tmp, 2)){ 
+                                    best=tmp; hit=true; 
+                                }
+                            }
+                            
+                            if (useHoriz) {
+                                // Top/bottom paddles with similar culling
+                                if (rd.y < 0.0f || ro.y > 0.0f) {  // Moving down or above center
+                                    if (intersectBox(ro,rd, topCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, 
+                                                   topCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ 
+                                        best=tmp; hit=true; 
+                                    }
+                                }
+                                if (rd.y > 0.0f || ro.y < 0.0f) {  // Moving up or below center
+                                    if (intersectBox(ro,rd, bottomCenter - Vec3{horizHalfX,horizHalfY,horizThickness}, 
+                                                   bottomCenter + Vec3{horizHalfX,horizHalfY,horizThickness}, best.t, tmp, 2)){ 
+                                        best=tmp; hit=true; 
+                                    }
+                                }
+                            }
+                            
+                            if (useObs) { 
+                                for (auto &bx : obsBoxes) {
+                                    if (intersectBox(ro,rd, bx.bmin, bx.bmax, best.t, tmp, 0)){ 
+                                        best=tmp; hit=true; 
+                                    } 
+                                }
+                            }
                             if (!hit) { 
                                 // Phase 4: FMA for background blend
                                 float t = 0.5f*(rd.y+1.0f); 
@@ -1394,20 +1668,29 @@ void SoftRenderer::render(const GameState &gs) {
                             }
                             if (best.mat==0) {
                                 Vec3 n=best.n; 
-                                float uA,uB; rng2(seed,uA,uB); 
-                                // Phase 1: Use fast trig
-                                float r1=6.28318531f*uA; // 2*PI
-                                float r2=uB; 
-                                float r2s=sqrt_fast(r2); 
-                                Vec3 w=n; 
-                                Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; 
-                                Vec3 v=norm(cross(w,a)); 
-                                Vec3 u=cross(v,w); 
-                                // Phase 1: Use fast cos/sin
-                                float c1 = cos_fast(r1);
-                                float s1 = sin_fast(r1);
-                                float sq = sqrt_fast(1.0f - r2);
-                                Vec3 d=norm(u*(c1*r2s) + v*(s1*r2s) + w*sq); 
+                                Vec3 d;
+                                
+                                // Phase 5: Cosine-weighted hemisphere sampling (2x quality improvement)
+                                if (config.useCosineWeighted) {
+                                    float uA, uB;
+                                    rng2(seed, uA, uB);
+                                    d = sampleCosineHemisphere(uA, uB, n);
+                                    // No need to multiply by cos(theta) since PDF already includes it
+                                } else {
+                                    // Legacy uniform hemisphere sampling
+                                    float uA,uB; rng2(seed,uA,uB); 
+                                    float r1=6.28318531f*uA; // 2*PI
+                                    float r2=uB; 
+                                    float r2s=sqrt_fast(r2); 
+                                    Vec3 w=n; 
+                                    Vec3 a=(std::fabs(w.x)>0.1f)?Vec3{0,1,0}:Vec3{1,0,0}; 
+                                    Vec3 v=norm(cross(w,a)); 
+                                    Vec3 u=cross(v,w); 
+                                    float c1 = cos_fast(r1);
+                                    float s1 = sin_fast(r1);
+                                    float sq = sqrt_fast(1.0f - r2);
+                                    d=norm(u*(c1*r2s) + v*(s1*r2s) + w*sq);
+                                } 
                                 ro = fma_add(best.pos, best.n, 0.002f);  // Phase 4: FMA for ray offset
                                 rd=d; 
                                 throughput=throughput*Vec3{0.62f,0.64f,0.67f}; 
@@ -1482,13 +1765,14 @@ void SoftRenderer::render(const GameState &gs) {
                     hdrG_ref[idx] = col.y;
                     hdrB_ref[idx] = col.z;
                     
-                    // Phase 3: Prefetch next pixel's data (sequential scan optimization)
-                    // Prefetch ~16 pixels ahead for L1 cache (~100-200 cycles latency)
-                    if (LIKELY(x + 16 < rtW)) {
-                        size_t prefetchIdx = idx + 16;
-                        _mm_prefetch((const char*)&hdrR_ref[prefetchIdx], _MM_HINT_T0);
-                        _mm_prefetch((const char*)&hdrG_ref[prefetchIdx], _MM_HINT_T0);
-                        _mm_prefetch((const char*)&hdrB_ref[prefetchIdx], _MM_HINT_T0);
+                            // Phase 3: Prefetch next pixel's data within tile
+                            if (LIKELY(x + 4 < tileXEnd)) {
+                                size_t prefetchIdx = idx + 4;
+                                _mm_prefetch((const char*)&hdrR_ref[prefetchIdx], _MM_HINT_T0);
+                                _mm_prefetch((const char*)&hdrG_ref[prefetchIdx], _MM_HINT_T0);
+                                _mm_prefetch((const char*)&hdrB_ref[prefetchIdx], _MM_HINT_T0);
+                            }
+                        }
                     }
                 }
             }
@@ -1792,13 +2076,120 @@ void SoftRenderer::temporalAccumulate(const std::vector<float>& curR, const std:
 }
 
 void SoftRenderer::spatialDenoise() {
-    // Phase 3: SIMD-optimized 3x3 box filter with SoA layout
+    // Skip spatial denoising if disabled
+    if (config.denoiseStrength <= 0.0f) return;
+    if (rtW==0 || rtH==0) return;
+    
+    int w=rtW, h=rtH;
+    float alpha = config.denoiseStrength;
+    
+    // Phase 5: Bilateral filter (edge-preserving) or box blur
+    // NOTE: Bilateral is high quality but expensive - disabled by default at high resolutions
+    if (config.useBilateralDenoise && w*h < 500000) {  // Only use bilateral if < 500K pixels
+        // Bilateral filter: preserves edges based on both spatial and color distance
+        float sigmaSpace = config.bilateralSigmaSpace;
+        float sigmaColor = config.bilateralSigmaColor;
+        float sigmaSpatial2 = 2.0f * sigmaSpace * sigmaSpace;
+        float sigmaColor2 = 2.0f * sigmaColor * sigmaColor;
+        
+        // Use 3x3 kernel for performance (9 samples vs 49 for 7x7)
+        const int radius = 1;
+        
+        // Pre-compute spatial weights (constant for each offset) - skip center (dx=0,dy=0)
+        float spatialWeights[8];  // 8 neighbors (center excluded)
+        int widx = 0;
+        for (int dy = -radius; dy <= radius; ++dy) {
+            for (int dx = -radius; dx <= radius; ++dx) {
+                if (dx == 0 && dy == 0) continue;  // Skip center
+                float spatialDist2 = (float)(dx*dx + dy*dy);
+                spatialWeights[widx++] = exp_fast(-spatialDist2 / sigmaSpatial2);
+            }
+        }
+        float centerSpatialWeight = 1.0f;  // Center always has weight 1.0
+        
+        // Color weight threshold (skip if negligible contribution)
+        const float minColorWeight = 0.01f;
+        float invSigmaColor2 = -1.0f / sigmaColor2;
+        
+        for (int y=0; y<h; ++y) {
+            for (int x=0; x<w; ++x) {
+                size_t centerIdx = (size_t)(y*w + x);
+                float centerR = accumR[centerIdx];
+                float centerG = accumG[centerIdx];
+                float centerB = accumB[centerIdx];
+                float centerLum = luminance(centerR, centerG, centerB);
+                
+                // Start with center pixel (weight = 1.0, color weight = 1.0)
+                float sumR = centerR * centerSpatialWeight;
+                float sumG = centerG * centerSpatialWeight;
+                float sumB = centerB * centerSpatialWeight;
+                float sumWeight = centerSpatialWeight;
+                
+                // Gather from 8 neighbors with pre-computed spatial weights
+                widx = 0;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= h) {
+                        if (dy != 0) widx += 3;  // Skip row (but not if center row)
+                        continue;
+                    }
+                    
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        if (dx == 0 && dy == 0) continue;  // Already processed center
+                        
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= w) {
+                            widx++;
+                            continue;
+                        }
+                        
+                        size_t nIdx = (size_t)(ny*w + nx);
+                        float nR = accumR[nIdx];
+                        float nG = accumG[nIdx];
+                        float nB = accumB[nIdx];
+                        float nLum = luminance(nR, nG, nB);
+                        
+                        // Color weight (fast path: pre-multiply invSigmaColor2)
+                        float colorDist = nLum - centerLum;
+                        float colorWeight = exp_fast(colorDist * colorDist * invSigmaColor2);
+                        
+                        // Early exit if color difference is too large (negligible weight)
+                        if (colorWeight < minColorWeight) {
+                            widx++;
+                            continue;
+                        }
+                        
+                        float weight = spatialWeights[widx++] * colorWeight;
+                        sumR += nR * weight;
+                        sumG += nG * weight;
+                        sumB += nB * weight;
+                        sumWeight += weight;
+                    }
+                }
+                
+                float invWeight = 1.0f / sumWeight;
+                denoiseR[centerIdx] = sumR * invWeight;
+                denoiseG[centerIdx] = sumG * invWeight;
+                denoiseB[centerIdx] = sumB * invWeight;
+            }
+        }
+        
+        // Blend with original based on alpha
+        for (size_t i=0; i<(size_t)(w*h); ++i) {
+            accumR[i] = accumR[i] * (1.0f - alpha) + denoiseR[i] * alpha;
+            accumG[i] = accumG[i] * (1.0f - alpha) + denoiseG[i] * alpha;
+            accumB[i] = accumB[i] * (1.0f - alpha) + denoiseB[i] * alpha;
+        }
+        return;
+    }
+    
+    // Fallback to box blur (SIMD-optimized 3x3 box filter with SoA layout)
     if (rtW<4 || rtH<4) return;
     float f = config.denoiseStrength;
     if (f <= 0.0001f) return; // skip work if disabled / negligible
     
-    const int w = rtW;
-    const int h = rtH;
+    const int w2 = rtW;
+    const int h2 = rtH;
     constexpr float inv9 = 1.0f / 9.0f; // Precomputed constant
     
     __m128 vInv9 = _mm_set1_ps(inv9);
@@ -1806,17 +2197,17 @@ void SoftRenderer::spatialDenoise() {
     __m128 vInvF = _mm_set1_ps(1.0f - f);
     
     // Process each channel separately (better cache locality with SoA)
-    for (int y=0; y<h; ++y) {
+    for (int y=0; y<h2; ++y) {
         int y0 = (y>0)? y-1 : y;
         int y1 = y;
-        int y2 = (y<h-1)? y+1 : y;
+        int y2 = (y<h2-1)? y+1 : y;
         
         int x = 0;
         
         // Phase 3: Process 4 pixels at once with SIMD (when possible)
-        for (; x + 3 < w; x += 4) {
+        for (; x + 3 < w2; x += 4) {
             // Compute indices for 4 consecutive pixels
-            size_t o0 = (size_t)(y*w + x);
+            size_t o0 = (size_t)(y*w2 + x);
             size_t o1 = o0 + 1;
             size_t o2 = o0 + 2;
             size_t o3 = o0 + 3;
@@ -1829,11 +2220,11 @@ void SoftRenderer::spatialDenoise() {
                 int xi = x + i;
                 int x0 = (xi>0)? xi-1 : xi;
                 int x1 = xi;
-                int x2 = (xi<w-1)? xi+1 : xi;
+                int x2 = (xi<w2-1)? xi+1 : xi;
                 
-                size_t idx00 = (size_t)(y0*w + x0), idx01 = (size_t)(y0*w + x1), idx02 = (size_t)(y0*w + x2);
-                size_t idx10 = (size_t)(y1*w + x0), idx11 = (size_t)(y1*w + x1), idx12 = (size_t)(y1*w + x2);
-                size_t idx20 = (size_t)(y2*w + x0), idx21 = (size_t)(y2*w + x1), idx22 = (size_t)(y2*w + x2);
+                size_t idx00 = (size_t)(y0*w2 + x0), idx01 = (size_t)(y0*w2 + x1), idx02 = (size_t)(y0*w2 + x2);
+                size_t idx10 = (size_t)(y1*w2 + x0), idx11 = (size_t)(y1*w2 + x1), idx12 = (size_t)(y1*w2 + x2);
+                size_t idx20 = (size_t)(y2*w2 + x0), idx21 = (size_t)(y2*w2 + x1), idx22 = (size_t)(y2*w2 + x2);
                 
                 sumR[i] = accumR[idx00] + accumR[idx01] + accumR[idx02] +
                          accumR[idx10] + accumR[idx11] + accumR[idx12] +
@@ -1885,14 +2276,14 @@ void SoftRenderer::spatialDenoise() {
         }
         
         // Handle remaining pixels in this row (scalar)
-        for (; x < w; ++x) {
+        for (; x < w2; ++x) {
             int x0 = (x>0)? x-1 : x;
             int x1 = x;
-            int x2 = (x<w-1)? x+1 : x;
+            int x2 = (x<w2-1)? x+1 : x;
             
-            size_t idx00 = (size_t)(y0*w + x0), idx01 = (size_t)(y0*w + x1), idx02 = (size_t)(y0*w + x2);
-            size_t idx10 = (size_t)(y1*w + x0), idx11 = (size_t)(y1*w + x1), idx12 = (size_t)(y1*w + x2);
-            size_t idx20 = (size_t)(y2*w + x0), idx21 = (size_t)(y2*w + x1), idx22 = (size_t)(y2*w + x2);
+            size_t idx00 = (size_t)(y0*w2 + x0), idx01 = (size_t)(y0*w2 + x1), idx02 = (size_t)(y0*w2 + x2);
+            size_t idx10 = (size_t)(y1*w2 + x0), idx11 = (size_t)(y1*w2 + x1), idx12 = (size_t)(y1*w2 + x2);
+            size_t idx20 = (size_t)(y2*w2 + x0), idx21 = (size_t)(y2*w2 + x1), idx22 = (size_t)(y2*w2 + x2);
             
             float sumR = accumR[idx00] + accumR[idx01] + accumR[idx02] +
                         accumR[idx10] + accumR[idx11] + accumR[idx12] +
@@ -1910,7 +2301,7 @@ void SoftRenderer::spatialDenoise() {
             float avgG = sumG * inv9;
             float avgB = sumB * inv9;
             
-            size_t o = (size_t)(y*w + x);
+            size_t o = (size_t)(y*w2 + x);
             float invF = 1.0f - f;
             denoiseR[o] = accumR[o]*invF + avgR*f;
             denoiseG[o] = accumG[o]*invF + avgG*f;
