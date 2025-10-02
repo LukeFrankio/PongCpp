@@ -80,6 +80,9 @@ struct SRConfig {
     float bilateralSigmaSpace = 1.0f;       // Bilateral spatial sigma (pixel distance falloff)
     float bilateralSigmaColor = 0.1f;       // Bilateral color sigma (luminance difference falloff)
     float lightCullDistance = 50.0f;        // Distance multiplier for light culling (lights beyond this * radius are skipped)
+    
+    // Phase 9: SIMD packet ray tracing
+    bool  usePacketTracing = true;          // Use 4-wide SIMD ray packets for primary rays (4x throughput improvement)
 };
 
 // Runtime statistics for profiling / HUD overlay

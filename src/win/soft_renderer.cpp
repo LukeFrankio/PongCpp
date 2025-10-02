@@ -980,11 +980,14 @@ static inline void intersectPlane4(const RayPacket4 &rays,
     hit.py = _mm_blendv_ps(hit.py, pos_y, update_mask);
     hit.pz = _mm_blendv_ps(hit.pz, pos_z, update_mask);
     
-    // Determine normal direction (flip if denom < 0)
+    // Determine normal direction (flip if denom >= 0, keep if denom < 0)
+    // Scalar: hit.n=(denom<0)?n:(n*-1.0f) means: flip when denom >= 0
     __m128 denom_neg = _mm_cmplt_ps(denom, _mm_setzero_ps());
-    __m128 normal_x = _mm_blendv_ps(nx, _mm_sub_ps(_mm_setzero_ps(), nx), denom_neg);
-    __m128 normal_y = _mm_blendv_ps(ny, _mm_sub_ps(_mm_setzero_ps(), ny), denom_neg);
-    __m128 normal_z = _mm_blendv_ps(nz, _mm_sub_ps(_mm_setzero_ps(), nz), denom_neg);
+    // _mm_blendv_ps selects second arg when mask is all 1s (true)
+    // So: when denom < 0 (denom_neg=true), keep original; when denom >= 0 (denom_neg=false), negate
+    __m128 normal_x = _mm_blendv_ps(_mm_sub_ps(_mm_setzero_ps(), nx), nx, denom_neg);
+    __m128 normal_y = _mm_blendv_ps(_mm_sub_ps(_mm_setzero_ps(), ny), ny, denom_neg);
+    __m128 normal_z = _mm_blendv_ps(_mm_sub_ps(_mm_setzero_ps(), nz), nz, denom_neg);
     
     hit.nx = _mm_blendv_ps(hit.nx, normal_x, update_mask);
     hit.ny = _mm_blendv_ps(hit.ny, normal_y, update_mask);
@@ -995,6 +998,102 @@ static inline void intersectPlane4(const RayPacket4 &rays,
     hit.mat = _mm_castps_si128(_mm_blendv_ps(_mm_castsi128_ps(hit.mat),
                                              _mm_castsi128_ps(mat_id),
                                              update_mask));
+}
+
+// 4-wide box intersection (tests 4 rays against 1 axis-aligned box)
+static inline void intersectBox4(const RayPacket4 &rays,
+                                 const Vec3 &bmin,
+                                 const Vec3 &bmax,
+                                 const __m128 &tMax,
+                                 Hit4 &hit,
+                                 int mat) {
+    // Load box bounds
+    __m128 min_x = _mm_set1_ps(bmin.x);
+    __m128 min_y = _mm_set1_ps(bmin.y);
+    __m128 min_z = _mm_set1_ps(bmin.z);
+    __m128 max_x = _mm_set1_ps(bmax.x);
+    __m128 max_y = _mm_set1_ps(bmax.y);
+    __m128 max_z = _mm_set1_ps(bmax.z);
+    
+    // Slab test for X axis
+    __m128 inv_dx = _mm_div_ps(_mm_set1_ps(1.0f), rays.dx);
+    __m128 tx1 = _mm_mul_ps(_mm_sub_ps(min_x, rays.ox), inv_dx);
+    __m128 tx2 = _mm_mul_ps(_mm_sub_ps(max_x, rays.ox), inv_dx);
+    __m128 tmin_x = _mm_min_ps(tx1, tx2);
+    __m128 tmax_x = _mm_max_ps(tx1, tx2);
+    
+    // Slab test for Y axis
+    __m128 inv_dy = _mm_div_ps(_mm_set1_ps(1.0f), rays.dy);
+    __m128 ty1 = _mm_mul_ps(_mm_sub_ps(min_y, rays.oy), inv_dy);
+    __m128 ty2 = _mm_mul_ps(_mm_sub_ps(max_y, rays.oy), inv_dy);
+    __m128 tmin_y = _mm_min_ps(ty1, ty2);
+    __m128 tmax_y = _mm_max_ps(ty1, ty2);
+    
+    // Slab test for Z axis
+    __m128 inv_dz = _mm_div_ps(_mm_set1_ps(1.0f), rays.dz);
+    __m128 tz1 = _mm_mul_ps(_mm_sub_ps(min_z, rays.oz), inv_dz);
+    __m128 tz2 = _mm_mul_ps(_mm_sub_ps(max_z, rays.oz), inv_dz);
+    __m128 tmin_z = _mm_min_ps(tz1, tz2);
+    __m128 tmax_z = _mm_max_ps(tz1, tz2);
+    
+    // Compute intersection interval
+    __m128 tmin = _mm_max_ps(_mm_max_ps(tmin_x, tmin_y), tmin_z);
+    __m128 tmax_slab = _mm_min_ps(_mm_min_ps(tmax_x, tmax_y), tmax_z);
+    
+    // Valid if: tmax >= max(1e-3, tmin) && tmin < tMax && tmin < hit.t
+    __m128 tmin_clamped = _mm_max_ps(_mm_set1_ps(1e-3f), tmin);
+    __m128 valid = _mm_and_ps(_mm_cmpge_ps(tmax_slab, tmin_clamped),
+                             _mm_cmplt_ps(tmin_clamped, tMax));
+    valid = _mm_and_ps(valid, _mm_cmplt_ps(tmin_clamped, hit.t));
+    valid = _mm_and_ps(valid, rays.mask);
+    
+    // Update hits where valid
+    hit.t = _mm_blendv_ps(hit.t, tmin_clamped, valid);
+    
+    // Compute hit position: ro + rd * t
+    __m128 px_hit = _mm_add_ps(rays.ox, _mm_mul_ps(rays.dx, tmin_clamped));
+    __m128 py_hit = _mm_add_ps(rays.oy, _mm_mul_ps(rays.dy, tmin_clamped));
+    __m128 pz_hit = _mm_add_ps(rays.oz, _mm_mul_ps(rays.dz, tmin_clamped));
+    
+    hit.px = _mm_blendv_ps(hit.px, px_hit, valid);
+    hit.py = _mm_blendv_ps(hit.py, py_hit, valid);
+    hit.pz = _mm_blendv_ps(hit.pz, pz_hit, valid);
+    
+    // Determine hit normal (which slab was hit)
+    __m128 eps = _mm_set1_ps(1e-5f);
+    __m128 hit_x = _mm_cmplt_ps(_mm_sub_ps(tmin, tmin_x), eps);
+    __m128 hit_y = _mm_and_ps(_mm_cmplt_ps(_mm_sub_ps(tmin, tmin_y), eps),
+                              _mm_andnot_ps(hit_x, _mm_castsi128_ps(_mm_set1_epi32(-1))));
+    __m128 hit_z = _mm_andnot_ps(_mm_or_ps(hit_x, hit_y), _mm_castsi128_ps(_mm_set1_epi32(-1)));
+    
+    // Determine normal direction based on which side was hit
+    __m128 center_x = _mm_mul_ps(_mm_add_ps(min_x, max_x), _mm_set1_ps(0.5f));
+    __m128 center_y = _mm_mul_ps(_mm_add_ps(min_y, max_y), _mm_set1_ps(0.5f));
+    __m128 center_z = _mm_mul_ps(_mm_add_ps(min_z, max_z), _mm_set1_ps(0.5f));
+    
+    // Sign based on ray origin relative to box center
+    __m128 sign_x = _mm_blendv_ps(_mm_set1_ps(-1.0f), _mm_set1_ps(1.0f), 
+                                   _mm_cmplt_ps(rays.ox, center_x));
+    __m128 sign_y = _mm_blendv_ps(_mm_set1_ps(-1.0f), _mm_set1_ps(1.0f), 
+                                   _mm_cmplt_ps(rays.oy, center_y));
+    __m128 sign_z = _mm_blendv_ps(_mm_set1_ps(-1.0f), _mm_set1_ps(1.0f), 
+                                   _mm_cmplt_ps(rays.oz, center_z));
+    
+    __m128 nx = _mm_blendv_ps(_mm_setzero_ps(), sign_x, hit_x);
+    __m128 ny = _mm_blendv_ps(_mm_setzero_ps(), sign_y, hit_y);
+    __m128 nz = _mm_blendv_ps(_mm_setzero_ps(), sign_z, hit_z);
+    
+    hit.nx = _mm_blendv_ps(hit.nx, nx, valid);
+    hit.ny = _mm_blendv_ps(hit.ny, ny, valid);
+    hit.nz = _mm_blendv_ps(hit.nz, nz, valid);
+    
+    // Material
+    __m128i mat_val = _mm_set1_epi32(mat);
+    hit.mat = _mm_castps_si128(_mm_blendv_ps(_mm_castsi128_ps(hit.mat), 
+                                             _mm_castsi128_ps(mat_val), valid));
+    
+    // Update valid mask
+    hit.valid = _mm_or_ps(hit.valid, valid);
 }
 
 // Axis aligned thin box (only front/back + sides) simplified: treat as slab intersection returning surface normal of hit face.
@@ -1021,6 +1120,48 @@ static FORCE_INLINE bool intersectBox(Vec3 ro, Vec3 rd, Vec3 bmin, Vec3 bmax, fl
     }
     if (tmin < 1e-3f) return false;
     hit.t=tmin; hit.pos = ro + rd*tmin; hit.n = n; hit.mat=mat; return true;
+}
+
+// 4-wide AABB intersection (tests 4 rays against 1 AABB)
+// Returns a mask indicating which rays hit the AABB
+static inline __m128 intersectAABB4(const RayPacket4 &rays, const Vec3 &bmin, const Vec3 &bmax, const __m128 &tMax) {
+    // Load AABB bounds
+    __m128 bmin_x = _mm_set1_ps(bmin.x);
+    __m128 bmin_y = _mm_set1_ps(bmin.y);
+    __m128 bmin_z = _mm_set1_ps(bmin.z);
+    __m128 bmax_x = _mm_set1_ps(bmax.x);
+    __m128 bmax_y = _mm_set1_ps(bmax.y);
+    __m128 bmax_z = _mm_set1_ps(bmax.z);
+    
+    // Compute inverse ray direction (handle division by zero)
+    __m128 invdx = _mm_div_ps(_mm_set1_ps(1.0f), rays.dx);
+    __m128 invdy = _mm_div_ps(_mm_set1_ps(1.0f), rays.dy);
+    __m128 invdz = _mm_div_ps(_mm_set1_ps(1.0f), rays.dz);
+    
+    // X slab
+    __m128 tx1 = _mm_mul_ps(_mm_sub_ps(bmin_x, rays.ox), invdx);
+    __m128 tx2 = _mm_mul_ps(_mm_sub_ps(bmax_x, rays.ox), invdx);
+    __m128 tmin = _mm_min_ps(tx1, tx2);
+    __m128 tmax_val = _mm_max_ps(tx1, tx2);
+    
+    // Y slab
+    __m128 ty1 = _mm_mul_ps(_mm_sub_ps(bmin_y, rays.oy), invdy);
+    __m128 ty2 = _mm_mul_ps(_mm_sub_ps(bmax_y, rays.oy), invdy);
+    tmin = _mm_max_ps(tmin, _mm_min_ps(ty1, ty2));
+    tmax_val = _mm_min_ps(tmax_val, _mm_max_ps(ty1, ty2));
+    
+    // Z slab
+    __m128 tz1 = _mm_mul_ps(_mm_sub_ps(bmin_z, rays.oz), invdz);
+    __m128 tz2 = _mm_mul_ps(_mm_sub_ps(bmax_z, rays.oz), invdz);
+    tmin = _mm_max_ps(tmin, _mm_min_ps(tz1, tz2));
+    tmax_val = _mm_min_ps(tmax_val, _mm_max_ps(tz1, tz2));
+    
+    // Check if ray intersects AABB: tmax >= max(0, tmin) && tmin < tMax
+    __m128 zero = _mm_setzero_ps();
+    __m128 tmin_clamped = _mm_max_ps(zero, tmin);
+    __m128 hit1 = _mm_cmpge_ps(tmax_val, tmin_clamped);
+    __m128 hit2 = _mm_cmplt_ps(tmin, tMax);
+    return _mm_and_ps(hit1, hit2);
 }
 
 void SoftRenderer::render(const GameState &gs) {
@@ -1960,15 +2101,387 @@ void SoftRenderer::render(const GameState &gs) {
                     
                     // Process entire tile (better cache locality)
                     for (int y = tileY; y < tileYEnd; ++y) {
-                        for (int x = tileX; x < tileXEnd; ++x) {
-                            Vec3 col{0,0,0};
-                            uint32_t seed = (x*1973) ^ (y*9277) ^ (frameCounter*26699u);
-                            
-                            for (int s=0; s<spp; ++s) {
-                                float u1, u2;
+                        int x = tileX;
+                        
+                        // Phase 9: SIMD packet ray tracing for primary rays (4-wide batches)
+                        // Process 4 pixels at once when packet tracing is enabled and spp==1
+                        // Uses SIMD BVH traversal for efficient intersection testing
+                        if (config.usePacketTracing && spp == 1) {
+                            for (; x + 3 < tileXEnd; x += 4) {
+                                // Initialize 4 primary rays (one per pixel)
+                                RayPacket4 packet;
+                                Vec3 ro4[4], rd4[4];
+                                uint32_t seeds[4];
                                 
-                                // Phase 5: Enhanced sampling strategies
-                                if (config.useHaltonSeq) {
+                                for (int i = 0; i < 4; ++i) {
+                                    int px = x + i;
+                                    seeds[i] = (px*1973) ^ (y*9277) ^ (frameCounter*26699u);
+                                    float u1, u2;
+                                    
+                                    // Use same sampling strategy as scalar path
+                                    if (config.useBlueNoise) {
+                                        u1 = sampleBlueNoise(px, y, frameCounter);
+                                        u2 = sampleBlueNoise(px + 32, y + 32, frameCounter);
+                                    } else {
+                                        rng2(seeds[i], u1, u2);
+                                    }
+                                    
+                                    float rx = (px + u1) * invRTW;
+                                    float ry = (y + u2) * invRTH;
+                                    
+                                    if (config.useOrtho) {
+                                        float jx, jy;
+                                        rng2(seeds[i], jx, jy);
+                                        float wx = ((px + jx) * invRTW - 0.5f) * 4.0f;
+                                        float wy = (((rtH-1-y) + jy) * invRTH - 0.5f) * 3.0f;
+                                        ro4[i] = {wx, wy, -1.0f};
+                                        rd4[i] = {0, 0, 1};
+                                    } else {
+                                        float px_cam = (2*rx - 1) * tanF * aspect;
+                                        float py_cam = (1 - 2*ry) * tanF;
+                                        rd4[i] = norm(Vec3{px_cam, py_cam, 1});
+                                        ro4[i] = camPos;
+                                    }
+                                }
+                                
+                                // Load rays into SIMD packet
+                                packet.ox = _mm_set_ps(ro4[3].x, ro4[2].x, ro4[1].x, ro4[0].x);
+                                packet.oy = _mm_set_ps(ro4[3].y, ro4[2].y, ro4[1].y, ro4[0].y);
+                                packet.oz = _mm_set_ps(ro4[3].z, ro4[2].z, ro4[1].z, ro4[0].z);
+                                packet.dx = _mm_set_ps(rd4[3].x, rd4[2].x, rd4[1].x, rd4[0].x);
+                                packet.dy = _mm_set_ps(rd4[3].y, rd4[2].y, rd4[1].y, rd4[0].y);
+                                packet.dz = _mm_set_ps(rd4[3].z, rd4[2].z, rd4[1].z, rd4[0].z);
+                                packet.mask = _mm_castsi128_ps(_mm_set1_epi32(-1));  // All active
+                                
+                                // Initialize hit records
+                                Hit4 hit4;
+                                hit4.t = _mm_set1_ps(1e30f);
+                                hit4.valid = _mm_setzero_ps();
+                                hit4.nx = _mm_setzero_ps();
+                                hit4.ny = _mm_setzero_ps();
+                                hit4.nz = _mm_setzero_ps();
+                                hit4.px = _mm_setzero_ps();
+                                hit4.py = _mm_setzero_ps();
+                                hit4.pz = _mm_setzero_ps();
+                                hit4.mat = _mm_set1_epi32(0);
+                                
+                                __m128 tMax = _mm_set1_ps(1e30f);
+                                
+                                // Test against scene geometry (4 rays simultaneously)
+                                // Planes (not in BVH, test separately)
+                                intersectPlane4(packet, Vec3{0, 1.6f, 0}, Vec3{0, -1, 0}, tMax, hit4, 0);
+                                intersectPlane4(packet, Vec3{0, -1.6f, 0}, Vec3{0, 1, 0}, tMax, hit4, 0);
+                                intersectPlane4(packet, Vec3{0, 0, 1.8f}, Vec3{0, 0, -1}, tMax, hit4, 0);
+                                
+                                // BVH traversal for balls, paddles, and obstacles (4 rays simultaneously)
+                                if (bvhRootIndex >= 0) {
+                                    // Stack-based BVH traversal for 4 rays
+                                    int stack[64];
+                                    int stackPtr = 0;
+                                    stack[stackPtr++] = bvhRootIndex;
+                                    
+                                    while (stackPtr > 0) {
+                                        int nodeIdx = stack[--stackPtr];
+                                        const BVHNode& node = bvhNodes[nodeIdx];
+                                        
+                                        // Test all 4 rays against this AABB
+                                        __m128 hit_mask = intersectAABB4(packet, node.bmin, node.bmax, hit4.t);
+                                        
+                                        // Check if any ray hit the AABB
+                                        int hit_any = _mm_movemask_ps(hit_mask);
+                                        if (hit_any == 0) continue;  // No rays hit this node, skip
+                                        
+                                        if (node.primCount > 0) {
+                                            // Leaf node: test primitives
+                                            for (int i = 0; i < node.primCount; ++i) {
+                                                const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
+                                                if (prim.objType == 0) {
+                                                    // Ball (sphere)
+                                                    int bi = prim.objIndex;
+                                                    intersectSphere4(packet, ballCenters[bi], ballRs[bi], tMax, hit4, prim.mat);
+                                                } else if (prim.objType == 1) {
+                                                    // Paddle (box)
+                                                    intersectBox4(packet, prim.bmin, prim.bmax, tMax, hit4, prim.mat);
+                                                } else if (prim.objType == 2) {
+                                                    // Obstacle (box)
+                                                    intersectBox4(packet, prim.bmin, prim.bmax, tMax, hit4, prim.mat);
+                                                }
+                                            }
+                                        } else {
+                                            // Internal node: push children onto stack
+                                            if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
+                                            if (node.leftChild >= 0) stack[stackPtr++] = node.leftChild;
+                                        }
+                                    }
+                                }
+                                
+                                // Extract results and continue with scalar path tracing for bounces
+                                alignas(16) float t_out[4], nx_out[4], ny_out[4], nz_out[4];
+                                alignas(16) float px_out[4], py_out[4], pz_out[4];
+                                alignas(16) int32_t mat_out[4];
+                                alignas(16) float valid_out[4];
+                                
+                                _mm_store_ps(t_out, hit4.t);
+                                _mm_store_ps(nx_out, hit4.nx);
+                                _mm_store_ps(ny_out, hit4.ny);
+                                _mm_store_ps(nz_out, hit4.nz);
+                                _mm_store_ps(px_out, hit4.px);
+                                _mm_store_ps(py_out, hit4.py);
+                                _mm_store_ps(pz_out, hit4.pz);
+                                _mm_store_si128((__m128i*)mat_out, hit4.mat);
+                                _mm_store_ps(valid_out, hit4.valid);
+                                
+                                // Process each ray result
+                                for (int i = 0; i < 4; ++i) {
+                                    int px = x + i;
+                                    Vec3 col{0, 0, 0};
+                                    uint32_t seed = seeds[i];
+                                    Vec3 ro = ro4[i];
+                                    Vec3 rd = rd4[i];
+                                    Vec3 throughput{1, 1, 1};
+                                    bool terminated = false;
+                                    int bounce = 0;
+                                    
+                                    // Check if primary ray hit anything (from packet trace)
+                                    uint32_t valid_bits;
+                                    std::memcpy(&valid_bits, &valid_out[i], sizeof(uint32_t));
+                                    bool hit_primary = (valid_bits != 0);
+                                    
+                                    if (!hit_primary) {
+                                        // Background
+                                        float t = 0.5f * (rd.y + 1.0f);
+                                        Vec3 bgTop{0.26f, 0.30f, 0.38f};
+                                        Vec3 bgBottom{0.08f, 0.10f, 0.16f};
+                                        col = fma_madd(bgBottom, 1.0f - t, bgTop, t);
+                                        terminated = true;
+                                    } else {
+                                        // Extract hit information from packet result
+                                        Hit best;
+                                        best.t = t_out[i];
+                                        best.n = Vec3{nx_out[i], ny_out[i], nz_out[i]};
+                                        best.pos = Vec3{px_out[i], py_out[i], pz_out[i]};
+                                        best.mat = mat_out[i];
+                                        // Always accumulate direct lighting for diffuse and paddle after primary hit
+                                        if (best.mat == 1) {
+                                            col = fma_add(col, throughput * materials.emitColor, 1.0f);
+                                            terminated = true;
+                                        } else if (best.mat == 0) {
+                                            Vec3 n = best.n;
+                                            Vec3 d;
+                                            if (config.useCosineWeighted) {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                d = sampleCosineHemisphere(uA, uB, n);
+                                            } else {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = n;
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                d = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                            }
+                                            ro = fma_add(best.pos, best.n, 0.002f);
+                                            rd = d;
+                                            throughput = throughput * materials.diffuseAlbedo;
+                                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
+                                            col = fma_add(col, throughput * direct, 1.0f);
+                                            bounce = 1;
+                                        } else if (best.mat == 2) {
+                                            if (config.paddleEmissiveIntensity > 0.0f) {
+                                                col = fma_add(col, throughput * materials.paddleEmitColor, 1.0f);
+                                                terminated = true;
+                                                bounce = config.maxBounces;
+                                            } else {
+                                                Vec3 n = best.n;
+                                                float cosi = dot(rd, n);
+                                                rd = rd - n * (2.0f * cosi);
+                                                float rough = materials.roughness;
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = norm(n);
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                Vec3 fuzz = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                                rd = norm(fma_madd(rd, 1.0f - rough, fuzz, rough));
+                                                ro = fma_add(best.pos, rd, 0.002f);
+                                                throughput = throughput * (Vec3{0.86f, 0.88f, 0.94f} * 0.5f + materials.paddleColor * 0.5f);
+                                                Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;
+                                                col = fma_add(col, throughput * direct, 1.0f);
+                                                bounce = 1;
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Continue with remaining bounces using scalar intersection (ray divergence makes SIMD inefficient)
+                                    for (; bounce < config.maxBounces && !terminated; ++bounce) {
+                                        Hit best; best.t = 1e30f; bool hit = false; Hit tmp;
+                                        
+                                        // Test planes
+                                        if (intersectPlane(ro, rd, Vec3{0, 1.6f, 0}, Vec3{0, -1, 0}, best.t, tmp, 0)) { best = tmp; best.objId = 200; hit = true; }
+                                        if (intersectPlane(ro, rd, Vec3{0, -1.6f, 0}, Vec3{0, 1, 0}, best.t, tmp, 0)) { best = tmp; best.objId = 201; hit = true; }
+                                        if (intersectPlane(ro, rd, Vec3{0, 0, 1.8f}, Vec3{0, 0, -1}, best.t, tmp, 0)) { best = tmp; best.objId = 202; hit = true; }
+                                        
+                                        // BVH traversal (same as scalar path)
+                                        if (bvhRootIndex >= 0) {
+                                            int stack[64];
+                                            int stackPtr = 0;
+                                            stack[stackPtr++] = bvhRootIndex;
+                                            
+                                            while (stackPtr > 0) {
+                                                int nodeIdx = stack[--stackPtr];
+                                                const BVHNode& node = bvhNodes[nodeIdx];
+                                                if (!intersectAABB(ro, rd, node.bmin, node.bmax, best.t)) continue;
+                                                
+                                                if (node.primCount > 0) {
+                                                    for (int i = 0; i < node.primCount; ++i) {
+                                                        const BVHPrimitive& prim = bvhPrimitives[node.primStart + i];
+                                                        if (prim.objType == 0) {
+                                                            int bi = prim.objIndex;
+                                                            if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 1) {
+                                                            if (intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 2) {
+                                                            if (intersectBox(ro, rd, prim.bmin, prim.bmax, best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    if (node.leftChild >= 0) stack[stackPtr++] = node.leftChild;
+                                                    if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (!hit) {
+                                            float t = 0.5f * (rd.y + 1.0f);
+                                            Vec3 bgTop{0.26f, 0.30f, 0.38f};
+                                            Vec3 bgBottom{0.08f, 0.10f, 0.16f};
+                                            col = fma_add(col, throughput * fma_madd(bgBottom, 1.0f - t, bgTop, t), 1.0f);
+                                            terminated = true;
+                                            break;
+                                        }
+                                        if (best.mat == 1) {
+                                            col = fma_add(col, throughput * materials.emitColor, 1.0f);
+                                            terminated = true;
+                                            break;
+                                        }
+                                        
+                                        float maxT = max_component(throughput);
+                                        if (UNLIKELY(maxT < 5e-3f)) {
+                                            earlyExitAccum++;
+                                            terminated = true;
+                                            break;
+                                        }
+                                        
+                                        if (best.mat == 0) {
+                                            Vec3 n = best.n;
+                                            Vec3 d;
+                                            if (config.useCosineWeighted) {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                d = sampleCosineHemisphere(uA, uB, n);
+                                            } else {
+                                                float uA, uB;
+                                                rng2(seed, uA, uB);
+                                                float r1 = 6.28318531f * uA;
+                                                float r2 = uB;
+                                                float r2s = sqrt_fast(r2);
+                                                Vec3 w = n;
+                                                Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                                Vec3 v = norm(cross(w, a));
+                                                Vec3 u = cross(v, w);
+                                                d = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                            }
+                                            ro = fma_add(best.pos, best.n, 0.002f);
+                                            rd = d;
+                                            throughput = throughput * materials.diffuseAlbedo;
+                                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, false);
+                                            col = fma_add(col, throughput * direct, 1.0f);
+                                        } else if (best.mat == 2) {
+                                            if (config.paddleEmissiveIntensity > 0.0f) {
+                                                col = fma_add(col, throughput * materials.paddleEmitColor, 1.0f);
+                                                break;
+                                            }
+                                            Vec3 n = best.n;
+                                            float cosi = dot(rd, n);
+                                            rd = rd - n * (2.0f * cosi);
+                                            float rough = materials.roughness;
+                                            float uA, uB;
+                                            rng2(seed, uA, uB);
+                                            float r1 = 6.28318531f * uA;
+                                            float r2 = uB;
+                                            float r2s = sqrt_fast(r2);
+                                            Vec3 w = norm(n);
+                                            Vec3 a = (std::fabs(w.x) > 0.1f) ? Vec3{0, 1, 0} : Vec3{1, 0, 0};
+                                            Vec3 v = norm(cross(w, a));
+                                            Vec3 u = cross(v, w);
+                                            Vec3 fuzz = norm(u * (cos_fast(r1) * r2s) + v * (sin_fast(r1) * r2s) + w * sqrt_fast(1.0f - r2));
+                                            rd = norm(fma_madd(rd, 1.0f - rough, fuzz, rough));
+                                            ro = fma_add(best.pos, rd, 0.002f);
+                                            throughput = throughput * (Vec3{0.86f, 0.88f, 0.94f} * 0.5f + materials.paddleColor * 0.5f);
+                                            Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;
+                                            col = fma_add(col, throughput * direct, 1.0f);
+                                        }
+                                        
+                                        // Russian roulette
+                                        if (best.mat == 0 || best.mat == 2) {
+                                            float maxT = max_component(throughput);
+                                            if (UNLIKELY(maxT < 5e-3f)) {
+                                                earlyExitAccum++;
+                                                break;
+                                            }
+                                            if (LIKELY(config.rouletteEnable) && bounce >= config.rouletteStartBounce) {
+                                                float baseProbability = std::max(config.rouletteMinProb, std::min(maxT * 1.2f, 0.95f));
+                                                float rrand = rng1(seed);
+                                                if (UNLIKELY(rrand > baseProbability)) {
+                                                    rouletteAccum++;
+                                                    break;
+                                                }
+                                                throughput = throughput / baseProbability;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (!terminated) {
+                                        Vec3 amb{0.05f, 0.055f, 0.06f};
+                                        col = fma_add(col, throughput * amb, 1.0f);
+                                    }
+                                    
+                                    totalBounces.fetch_add(bounce, std::memory_order_relaxed);
+                                    pathsTraced++;
+                                    
+                                    // Write result
+                                    size_t idx = (size_t)(y * rtW + px);
+                                    hdrR_ref[idx] = col.x;
+                                    hdrG_ref[idx] = col.y;
+                                    hdrB_ref[idx] = col.z;
+                                }
+                            }  // end 4-pixel packet loop
+                        }  // end if (usePacketTracing)
+                        
+                        // Fallback to scalar processing for remaining pixels (after packet processing) or all pixels when packet tracing disabled
+                        for (; x < tileXEnd; ++x) {
+                                Vec3 col{0, 0, 0};
+                                uint32_t seed = (x * 1973) ^ (y * 9277) ^ (frameCounter * 26699u);
+                                
+                                for (int s = 0; s < spp; ++s) {
+                                    float u1, u2;
+                                    
+                                    // Phase 5: Enhanced sampling strategies
+                                    if (config.useHaltonSeq) {
                                     // Low-discrepancy Halton sequence
                                     int sampleIndex = (frameCounter * spp + s) & 0x3FFF;  // Wrap at 16K samples
                                     u1 = haltonBase2(sampleIndex);
@@ -2320,11 +2833,11 @@ void SoftRenderer::render(const GameState &gs) {
                                 _mm_prefetch((const char*)&hdrG_ref[prefetchIdx], _MM_HINT_T0);
                                 _mm_prefetch((const char*)&hdrB_ref[prefetchIdx], _MM_HINT_T0);
                             }
-                        }
-                    }
-                }
-            }
-        };
+                        }  // end scalar x loop
+                    }  // end y loop
+                }  // end tileX loop
+            }  // end tileY loop
+        };  // end worker lambda
 
         auto tTraceStart = clock::now();
         if (want == 1) {
