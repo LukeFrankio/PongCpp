@@ -829,15 +829,20 @@ static inline void intersectSphere4(const RayPacket4 &rays,
     __m128 ocy = _mm_sub_ps(rays.oy, cy);
     __m128 ocz = _mm_sub_ps(rays.oz, cz);
     
-    // b = dot(oc, rd)
+    // b = dot(oc, rd) - use FMA if available
+    #ifdef __FMA__
+    __m128 b = _mm_fmadd_ps(ocx, rays.dx, _mm_fmadd_ps(ocy, rays.dy, _mm_mul_ps(ocz, rays.dz)));
+    // c = dot(oc, oc) - r^2
+    __m128 oc_len2 = _mm_fmadd_ps(ocx, ocx, _mm_fmadd_ps(ocy, ocy, _mm_mul_ps(ocz, ocz)));
+    #else
     __m128 b = _mm_add_ps(_mm_add_ps(_mm_mul_ps(ocx, rays.dx),
                                      _mm_mul_ps(ocy, rays.dy)),
                           _mm_mul_ps(ocz, rays.dz));
-    
     // c = dot(oc, oc) - r^2
     __m128 oc_len2 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(ocx, ocx),
                                            _mm_mul_ps(ocy, ocy)),
                                 _mm_mul_ps(ocz, ocz));
+    #endif
     __m128 c = _mm_sub_ps(oc_len2, r2);
     
     // disc = b*b - c
@@ -846,15 +851,8 @@ static inline void intersectSphere4(const RayPacket4 &rays,
     // Check if disc < 0 (no hit)
     __m128 disc_valid = _mm_cmpge_ps(disc, _mm_setzero_ps());
     
-    // sqrt(disc) - use scalar fast sqrt for each lane
-    alignas(16) float disc_arr[4];
-    _mm_store_ps(disc_arr, disc);
-    __m128 sqrt_disc = _mm_set_ps(
-        sqrt_fast(disc_arr[3]),
-        sqrt_fast(disc_arr[2]),
-        sqrt_fast(disc_arr[1]),
-        sqrt_fast(disc_arr[0])
-    );
+    // sqrt(disc) - use SIMD sqrt for better performance
+    __m128 sqrt_disc = _mm_sqrt_ps(_mm_max_ps(disc, _mm_setzero_ps()));
     
     // t = -b - sqrt(disc)
     __m128 t = _mm_sub_ps(_mm_sub_ps(_mm_setzero_ps(), b), sqrt_disc);
@@ -1547,12 +1545,19 @@ void SoftRenderer::render(const GameState &gs) {
         float inv_maxT = rsqrt_fast(dist2);
         float maxT = dist2 * inv_maxT;
         dir = dir * inv_maxT;
+        
+        // Phase 10: Quick distance check - if target is very close, skip most tests
+        bool needFullTest = (maxT > 0.1f);
+        
         Hit tmp; Hit best; best.t = maxT - 1e-3f;
         // Phase 1: Early out with branch hints
-        // Planes
+        // Planes - always test as they're infinite
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0, 1.6f,0}, Vec3{0,-1,0}, best.t, tmp, 0))) return true;
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0,-1.6f,0}, Vec3{0, 1,0}, best.t, tmp, 0))) return true;
         if (UNLIKELY(intersectPlane(from,dir, Vec3{0,0, 1.8f}, Vec3{0,0,-1}, best.t, tmp, 0))) return true;
+        
+        if (!needFullTest) return false;  // Very close target, planes already checked
+        
         // Paddles: only block light if they're NOT emissive (emissive paddles act as light sources, not occluders)
         if (config.paddleEmissiveIntensity <= 0.0f) {
             float inflate = 0.01f;
@@ -1575,12 +1580,20 @@ void SoftRenderer::render(const GameState &gs) {
     };
     // Sample direct lighting from all emissive spheres and paddles with soft shadows.
     // Phase 5: Enhanced with light culling and adaptive sampling
+    // Phase 10: Optimized for performance - reduced redundant calculations
     auto sampleDirect = [&](Vec3 pos, Vec3 n, Vec3 viewDir, uint32_t &seed, bool isMetal)->Vec3 {
         int totalLightCount = (int)ballCenters.size() + (int)paddleLights.size();
         if (UNLIKELY(totalLightCount == 0)) return Vec3{0,0,0};
         int ballLightCount = (int)ballCenters.size();
         int shadowSamples = std::max(1, config.softShadowSamples);
         Vec3 sum{0,0,0};
+        
+        // Pre-compute offset for shadow ray origin
+        Vec3 shadowOrigin = pos + n * 0.002f;
+        
+        // Pre-compute light normalization factor
+        float lightNorm = (totalLightCount > 1) ? (1.0f / (float)totalLightCount) : 1.0f;
+        
         // Sample ball lights (spherical area lights)
         for (int li=0; li<ballLightCount; ++li) {
             Vec3 center = ballCenters[li];
@@ -1601,7 +1614,7 @@ void SoftRenderer::render(const GameState &gs) {
             int adaptiveSamples = shadowSamples;
             if (config.adaptiveSoftShadows && shadowSamples > 1) {
                 // Quick visibility test: check center of light
-                bool centerVisible = !occludedToPoint(pos + n*0.002f, center, li);
+                bool centerVisible = !occludedToPoint(shadowOrigin, center, li);
                 if (centerVisible) {
                     // Fully lit, use minimal samples
                     adaptiveSamples = 1;
@@ -1609,7 +1622,7 @@ void SoftRenderer::render(const GameState &gs) {
                     // In shadow or penumbra, check if fully shadowed
                     // Sample one edge point
                     Vec3 edgePt = center + Vec3{radius, 0, 0};
-                    bool edgeVisible = !occludedToPoint(pos + n*0.002f, edgePt, li);
+                    bool edgeVisible = !occludedToPoint(shadowOrigin, edgePt, li);
                     if (!edgeVisible) {
                         // Fully shadowed, skip entirely
                         continue;
@@ -1619,6 +1632,9 @@ void SoftRenderer::render(const GameState &gs) {
             }
             
             Vec3 lightAccum{0,0,0};
+            // Pre-compute emissive color with normalization
+            Vec3 emitColor = materials.emitColor * lightNorm;
+            
             for (int s=0; s<adaptiveSamples; ++s) {
                 // Phase 1: Optimized sphere sampling with fast math
                 float u1 = rng1(seed);
@@ -1639,17 +1655,12 @@ void SoftRenderer::render(const GameState &gs) {
                 L = L * inv_dist;
                 float ndotl = dot(n,L); 
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
-                if (occludedToPoint(pos + n*0.002f, spherePt, li)) continue;
+                if (occludedToPoint(shadowOrigin, spherePt, li)) continue;
                 // Phase 6: Use pre-computed emissive color and material properties
-                Vec3 emitColor = materials.emitColor;
-                // Normalization when multiple lights (keep total similar); also divide by samples
-                if (totalLightCount>1) emitColor = emitColor / (float)totalLightCount;
                 float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
-                float brdfScale = 1.0f;
                 if (config.pbrEnable) {
                     if (!isMetal) {
-                        brdfScale = materials.invPi;  // Phase 6: Pre-computed
-                        lightAccum = lightAccum + emitColor * (ndotl * atten * brdfScale);
+                        lightAccum = lightAccum + emitColor * (ndotl * atten * materials.invPi);
                     } else {
                         // Simple specular (Schlick Fresnel * NdotL) with roughness attenuation
                         Vec3 V = norm(viewDir * -1.0f); // view direction towards camera
@@ -1692,18 +1703,21 @@ void SoftRenderer::render(const GameState &gs) {
             // Phase 5: Adaptive sampling for paddles
             int adaptiveSamples = shadowSamples;
             if (config.adaptiveSoftShadows && shadowSamples > 1) {
-                bool centerVisible = !occludedToPoint(pos + n*0.002f, plight.center, -1);
+                bool centerVisible = !occludedToPoint(shadowOrigin, plight.center, -1);
                 if (centerVisible) {
                     adaptiveSamples = 1;
                 } else {
                     // Test corner
                     Vec3 cornerPt = plight.center + Vec3{plight.halfX, plight.halfY, 0.0f};
-                    bool cornerVisible = !occludedToPoint(pos + n*0.002f, cornerPt, -1);
+                    bool cornerVisible = !occludedToPoint(shadowOrigin, cornerPt, -1);
                     if (!cornerVisible) continue;  // Fully shadowed
                 }
             }
             
             Vec3 lightAccum{0,0,0};
+            // Pre-compute paddle emission color with normalization
+            Vec3 paddleEmit = materials.paddleEmitColor * lightNorm;
+            
             for (int s=0; s<adaptiveSamples; ++s) {
                 // Sample random point on paddle rectangle (in XY plane, Z~0)
                 float u1 = rng1(seed);
@@ -1715,21 +1729,16 @@ void SoftRenderer::render(const GameState &gs) {
                 float dist2 = dot(L,L);
                 if (UNLIKELY(dist2 < 1e-12f)) continue;
                 float inv_dist = rsqrt_fast(dist2);
-                float dist = dist2 * inv_dist;
                 L = L * inv_dist;
                 float ndotl = dot(n,L);
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
                 // Check occlusion (shadow test against scene geometry)
-                if (occludedToPoint(pos + n*0.002f, lightPt, -1)) continue;
+                if (occludedToPoint(shadowOrigin, lightPt, -1)) continue;
                 // Phase 6: Use pre-computed paddle emission color
-                Vec3 paddleEmit = materials.paddleEmitColor;
-                if (totalLightCount>1) paddleEmit = paddleEmit / (float)totalLightCount;
                 float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
-                float brdfScale = 1.0f;
                 if (config.pbrEnable) {
                     if (!isMetal) {
-                        brdfScale = materials.invPi;  // Phase 6: Pre-computed
-                        lightAccum = lightAccum + paddleEmit * (ndotl * atten * brdfScale);
+                        lightAccum = lightAccum + paddleEmit * (ndotl * atten * materials.invPi);
                     } else {
                         Vec3 V = norm(viewDir * -1.0f);
                         Vec3 H = norm(V + L);
@@ -2175,7 +2184,7 @@ void SoftRenderer::render(const GameState &gs) {
                                 
                                 // BVH traversal for balls, paddles, and obstacles (4 rays simultaneously)
                                 if (bvhRootIndex >= 0) {
-                                    // Stack-based BVH traversal for 4 rays
+                                    // Stack-based BVH traversal for 4 rays with optimized node ordering
                                     int stack[64];
                                     int stackPtr = 0;
                                     stack[stackPtr++] = bvhRootIndex;
@@ -2208,9 +2217,10 @@ void SoftRenderer::render(const GameState &gs) {
                                                 }
                                             }
                                         } else {
-                                            // Internal node: push children onto stack
-                                            if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
+                                            // Internal node: push children in optimal order
+                                            // Push both if valid, no need for distance sorting in simple scenes
                                             if (node.leftChild >= 0) stack[stackPtr++] = node.leftChild;
+                                            if (node.rightChild >= 0) stack[stackPtr++] = node.rightChild;
                                         }
                                     }
                                 }
