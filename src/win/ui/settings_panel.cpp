@@ -18,6 +18,7 @@ void SettingsPanel::resetDefaults() {
 	settings_->pt_internal_scale = 10;
 	settings_->pt_roughness = 0;
 	settings_->pt_emissive = 100;
+	settings_->pt_paddle_emissive = 0;
 	settings_->pt_accum_alpha = 75;
 	settings_->pt_denoise_strength = 25;
 	settings_->pt_force_full_pixel_rays = 1;
@@ -26,9 +27,30 @@ void SettingsPanel::resetDefaults() {
 	settings_->pt_rr_enable = 1;
 	settings_->pt_rr_start_bounce = 2;
 	settings_->pt_rr_min_prob_pct = 10;
+	settings_->pt_fanout_enable = 0;
+	settings_->pt_fanout_cap = 2000000;
+	settings_->pt_fanout_abort = 1;
 	settings_->pt_soft_shadow_samples = 4;
 	settings_->pt_light_radius_pct = 100;
 	settings_->pt_pbr_enable = 1;
+	settings_->recording_fps = 60;
+	// Phase 5 optimization defaults
+	settings_->pt_tile_size = 16;
+	settings_->pt_use_blue_noise = 1;
+	settings_->pt_use_cosine_weighted = 1;
+	settings_->pt_use_stratified = 1;
+	settings_->pt_use_halton = 0;
+	settings_->pt_adaptive_shadows = 1;
+	settings_->pt_use_bilateral = 1;
+	settings_->pt_bilateral_sigma_space = 10;
+	settings_->pt_bilateral_sigma_color = 10;
+	settings_->pt_light_cull_distance = 500;
+	// Gameplay defaults
+	settings_->recording_mode = 0;
+	settings_->physics_mode = 1;
+	settings_->speed_mode = 0;
+	settings_->hud_show_play = 1;
+	settings_->hud_show_record = 1;
 	// Segment tracer settings removed
 	changedSinceOpen_ = true;
 }
@@ -61,6 +83,10 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		{L"Soft Shadow Spp", &settings_->pt_soft_shadow_samples, 1, 64, 1},
 		{L"Light Radius %", &settings_->pt_light_radius_pct, 10, 500, 1},
 		{L"Recording FPS", &settings_->recording_fps, 15, 60, 1},
+		{L"Tile Size", &settings_->pt_tile_size, 4, 64, 4},
+		{L"Bilateral Sigma Space", &settings_->pt_bilateral_sigma_space, 1, 100, 1},
+		{L"Bilateral Sigma Color", &settings_->pt_bilateral_sigma_color, 1, 100, 1},
+		{L"Light Cull Distance", &settings_->pt_light_cull_distance, 10, 10000, 10},
 	};
 	int sliderCount = (int)(sizeof(sliders)/sizeof(sliders[0]));
 	int centerX = winW/2; int baseY = (int)(110*ui_scale + 0.5) - scrollOffset_; int rowH = (int)(46*ui_scale + 0.5);
@@ -71,7 +97,7 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	// Preliminary scroll computation (will be refined after all dynamic rows known)
 	int topVisible = (int)(80*ui_scale + 0.5);
 	int usableHeight = winH - bottomPanelH;
-	int contentBottom = baseY + (kBaseSliderCount + 9)*rowH + (int)(80*ui_scale + 0.5);
+	int contentBottom = baseY + (kBaseSliderCount + 16)*rowH + (int)(80*ui_scale + 0.5);
 	maxScroll_ = std::max(0, contentBottom - usableHeight + topVisible);
 
 	// Mouse wheel
@@ -109,8 +135,16 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	int cyFanoutEnable = baseY + (kBaseSliderCount+7)*rowH; bool fanEnableHot = (sel_==idxFanoutEnable_());
 	int cyFanoutCap = baseY + (kBaseSliderCount+8)*rowH; bool fanCapHot = (sel_==idxFanoutCap_());
 	int cyFanoutAbort = baseY + (kBaseSliderCount+9)*rowH; bool fanAbortHot = (sel_==idxFanoutAbort_());
-	// Recalculate scroll range using last dynamic row (fanout abort)
-	int contentBottom2 = cyFanoutAbort + rowH + (int)(80*ui_scale + 0.5);
+	// Phase 5 toggles
+	int cyBlueNoise = baseY + (kBaseSliderCount+10)*rowH; bool blueNoiseHot = (sel_==idxBlueNoise_());
+	int cyCosWeight = baseY + (kBaseSliderCount+11)*rowH; bool cosWeightHot = (sel_==idxCosineWeighted_());
+	int cyStratified = baseY + (kBaseSliderCount+12)*rowH; bool stratHot = (sel_==idxStratified_());
+	int cyHalton = baseY + (kBaseSliderCount+13)*rowH; bool haltonHot = (sel_==idxHalton_());
+	int cyAdaptShadow = baseY + (kBaseSliderCount+14)*rowH; bool adaptShadowHot = (sel_==idxAdaptiveShadows_());
+	int cyBilateral = baseY + (kBaseSliderCount+15)*rowH; bool bilateralHot = (sel_==idxUseBilateral_());
+	// Recalculate scroll range using last dynamic row (bilateral filter)
+	// Add generous bottom padding so all items can scroll well above the button panel
+	int contentBottom2 = cyBilateral + rowH * 10 + bottomPanelH * 2;
 	maxScroll_ = std::max(0, contentBottom2 - usableHeight + topVisible);
 	auto drawCenterLine=[&](const std::wstring &txt,int cy,bool hot){ SetTextColor(memDC, hot?RGB(255,240,160):RGB(200,200,210)); RECT r{0,cy-16,winW,cy+16}; DrawTextW(memDC,txt.c_str(),-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE); };
 	drawCenterLine(std::wstring(L"Force 1 ray / pixel: ") + (settings_->pt_force_full_pixel_rays?L"ON":L"OFF"), cyForce, forceHot);
@@ -120,6 +154,14 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	drawCenterLine(std::wstring(L"PBR: ") + (settings_->pt_pbr_enable?L"ON":L"OFF"), cyPBR, pbrHot);
 	drawCenterLine(std::wstring(L"Fan-Out Mode: ") + (settings_->pt_fanout_enable?L"ON":L"OFF"), cyFanoutEnable, fanEnableHot);
 	drawCenterLine(std::wstring(L"Fan-Out Abort On Cap: ") + (settings_->pt_fanout_abort?L"ON":L"OFF"), cyFanoutAbort, fanAbortHot);
+	// Phase 5 toggles
+	drawCenterLine(std::wstring(L"Blue Noise Sampling: ") + (settings_->pt_use_blue_noise?L"ON":L"OFF"), cyBlueNoise, blueNoiseHot);
+	drawCenterLine(std::wstring(L"Cosine-Weighted Sampling: ") + (settings_->pt_use_cosine_weighted?L"ON":L"OFF"), cyCosWeight, cosWeightHot);
+	drawCenterLine(std::wstring(L"Stratified Sampling: ") + (settings_->pt_use_stratified?L"ON":L"OFF"), cyStratified, stratHot);
+	drawCenterLine(std::wstring(L"Halton Sequence: ") + (settings_->pt_use_halton?L"ON":L"OFF"), cyHalton, haltonHot);
+	drawCenterLine(std::wstring(L"Adaptive Shadows: ") + (settings_->pt_adaptive_shadows?L"ON":L"OFF"), cyAdaptShadow, adaptShadowHot);
+	drawCenterLine(std::wstring(L"Bilateral Filter: ") + (settings_->pt_use_bilateral?L"ON":L"OFF"), cyBilateral, bilateralHot);
+	// Gameplay toggles removed - now in main menu
 	// Segment tracer toggle removed
 	// RR sliders
 	auto drawExtraSlider=[&](const std::wstring& label,int value,int minv,int maxv,int cy,bool hot){
@@ -155,28 +197,39 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	auto tooltipForIndex=[&](int idx)->std::wstring{
 		if(idx < sliderCount){
 			switch(idx){
-				case 0: return L"Rays / Frame: Primary samples each frame.";
-				case 1: return L"Max Bounces: Path depth cap.";
-				case 2: return L"Internal Scale: Internal resolution %.";
-				case 3: return L"Metal Roughness: Highlight spread.";
+				case 0: return L"Rays / Frame: Total primary rays per frame (1-1000).";
+				case 1: return L"Max Bounces: Maximum light bounces (1-8).";
+				case 2: return L"Internal Scale %: Render resolution scale (1-100%).";
+				case 3: return L"Metal Roughness %: Surface roughness (0-100%).";
 				case 4: return L"Ball Emissive %: Ball light intensity (1-5000).";
 				case 5: return L"Paddle Emissive %: Paddle light intensity (0-5000, 0=off).";
-				case 6: return L"Accum Alpha: History blend factor.";
-				case 7: return L"Denoise %: 3x3 blur strength.";
-				// case 7 removed (segment samples)
+				case 6: return L"Accum Alpha %: Temporal blending (0-100%).";
+				case 7: return L"Denoise %: Spatial noise reduction (0-100%).";
+				case 8: return L"Soft Shadow Spp: Samples per light for soft shadows (1-64).";
+				case 9: return L"Light Radius %: Light source size scale (10-500%).";
+				case 10: return L"Recording FPS: Target recording frame rate (15-60).";
+				case 11: return L"Tile Size: Render tile dimension in pixels (4-64, power of 2).";
+				case 12: return L"Bilateral Sigma Space: Spatial filtering range (1-100, *0.1).";
+				case 13: return L"Bilateral Sigma Color: Color difference threshold (1-100, *0.01).";
+				case 14: return L"Light Cull Distance: Max light influence distance (10-10000, *0.1).";
 			}
-		} else if(idx==idxForce_()) return L"Force 1 Ray: RaysPerFrame treated as per‑pixel.";
-		else if(idx==idxCamera_()) return L"Camera: Ortho or Perspective.";
-		else if(idx==idxForce4Wide_()) return L"Force 4-Wide: Force 4-wide SSE (ON) or allow 8-wide AVX2 (OFF). 4-wide avoids throttling on older CPUs.";
-		else if(idx==idxRREnable_()) return L"Russian Roulette enable toggle.";
-		else if(idx==idxRRStart_()) return L"RR Start: Bounce to begin termination.";
-		else if(idx==idxRRMin_()) return L"RR Min Prob: Survival probability clamp.";
-			else if(idx==idxPBREnable_()) return L"Physically Based: Energy conserving diffuse + Fresnel specular.";
-			else if(idx==idxFanoutEnable_()) return L"Fan-Out Mode: Exponential combinatorial rays (dangerous).";
-					else if(idx==idxFanoutCap_()) return L"Fan-Out Cap: Safety limit on total rays spawned.";
-					else if(idx==idxFanoutAbort_()) return L"Abort On Cap: Stop spawning when limit reached.";
-		// Segment tracer tooltip removed
-		else if(idx==idxReset_()) return L"Reset defaults (non‑destructive until Save).";
+		} else if(idx==idxForce_()) return L"Force 1 ray / pixel: Ensures minimum ray density at internal resolution.";
+		else if(idx==idxCamera_()) return L"Camera: Orthographic (parallel rays) vs Perspective projection.";
+		else if(idx==idxForce4Wide_()) return L"Force 4-Wide SIMD: Use SSE 4-wide even with AVX2 (for debugging).";
+		else if(idx==idxRREnable_()) return L"Russian Roulette: Probabilistic path termination for efficiency.";
+		else if(idx==idxRRStart_()) return L"RR Start Bounce: Bounce index where roulette begins (1-16).";
+		else if(idx==idxRRMin_()) return L"RR Min Prob %: Minimum survival probability (1-90%).";
+		else if(idx==idxPBREnable_()) return L"PBR: Physically-Based Rendering energy conservation.";
+		else if(idx==idxFanoutEnable_()) return L"Fan-Out Mode: EXPERIMENTAL combinatorial ray expansion (slow!).";
+		else if(idx==idxFanoutCap_()) return L"Fan-Out Ray Cap: Safety limit for exponential fan-out.";
+		else if(idx==idxFanoutAbort_()) return L"Fan-Out Abort On Cap: Abort vs continue when cap exceeded.";
+		else if(idx==idxBlueNoise_()) return L"Blue Noise Sampling: Use blue noise texture for better distribution.";
+		else if(idx==idxCosineWeighted_()) return L"Cosine-Weighted Sampling: Importance sample hemisphere by cosine.";
+		else if(idx==idxStratified_()) return L"Stratified Sampling: Jittered grid sampling reduces clustering.";
+		else if(idx==idxHalton_()) return L"Halton Sequence: Low-discrepancy quasi-random sequence (slower).";
+		else if(idx==idxAdaptiveShadows_()) return L"Adaptive Shadows: Vary shadow samples based on occlusion.";
+		else if(idx==idxUseBilateral_()) return L"Bilateral Filter: Edge-preserving blur for denoising.";
+		else if(idx==idxReset_()) return L"Reset all settings to default values.";
 		return L"";
 	};
 	if(sel_>=0) tipSel = tooltipForIndex(sel_);
@@ -191,7 +244,8 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 	}
 	// Checkbox style entries
 	auto hoCheck=[&](int cyLine,int idx){ RECT r{centerX - barW/2, cyLine - (int)(18*ui_scale), centerX + barW/2, cyLine + (int)(18*ui_scale)}; if(mouse_x>=r.left && mouse_x<=r.right && mouse_y>=r.top && mouse_y<=r.bottom) hoverIdx=idx; };
-	hoCheck(cyForce, idxForce_()); hoCheck(cyCam, idxCamera_()); hoCheck(cyRRE, idxRREnable_()); hoCheck(cyRRStart, idxRRStart_()); hoCheck(cyRRMin, idxRRMin_()); hoCheck(cyPBR, idxPBREnable_()); hoCheck(cyFanoutEnable, idxFanoutEnable_()); hoCheck(cyFanoutAbort, idxFanoutAbort_());
+	hoCheck(cyForce, idxForce_()); hoCheck(cyCam, idxCamera_()); hoCheck(cyForce4W, idxForce4Wide_()); hoCheck(cyRRE, idxRREnable_()); hoCheck(cyRRStart, idxRRStart_()); hoCheck(cyRRMin, idxRRMin_()); hoCheck(cyPBR, idxPBREnable_()); hoCheck(cyFanoutEnable, idxFanoutEnable_()); hoCheck(cyFanoutCap, idxFanoutCap_()); hoCheck(cyFanoutAbort, idxFanoutAbort_());
+	hoCheck(cyBlueNoise, idxBlueNoise_()); hoCheck(cyCosWeight, idxCosineWeighted_()); hoCheck(cyStratified, idxStratified_()); hoCheck(cyHalton, idxHalton_()); hoCheck(cyAdaptShadow, idxAdaptiveShadows_()); hoCheck(cyBilateral, idxUseBilateral_());
 	// Buttons (assign reset/save indices just for tooltip mapping)
 	int resetIdx = idxReset_(); if(mouse_x>=resetBtnR.left && mouse_x<=resetBtnR.right && mouse_y>=resetBtnR.top && mouse_y<=resetBtnR.bottom) hoverIdx=resetIdx; 
 	// (save button intentionally reuses same tooltip as its own action text)
@@ -225,12 +279,27 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_fanout_enable = settings_->pt_fanout_enable?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxFanoutAbort_()) {
 		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT)) { settings_->pt_fanout_abort = settings_->pt_fanout_abort?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxBlueNoise_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_use_blue_noise = settings_->pt_use_blue_noise?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxCosineWeighted_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_use_cosine_weighted = settings_->pt_use_cosine_weighted?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxStratified_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_use_stratified = settings_->pt_use_stratified?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxHalton_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_use_halton = settings_->pt_use_halton?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxAdaptiveShadows_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_adaptive_shadows = settings_->pt_adaptive_shadows?0:1; changedSinceOpen_ = true; }
+	} else if (sel_==idxUseBilateral_()) {
+		if (input.just_pressed(VK_LEFT) || input.just_pressed(VK_RIGHT) || input.just_pressed(VK_SPACE)) { settings_->pt_use_bilateral = settings_->pt_use_bilateral?0:1; changedSinceOpen_ = true; }
 	} else if (sel_==idxRRStart_()) {
 		if (input.just_pressed(VK_LEFT)) { settings_->pt_rr_start_bounce = std::max(1, settings_->pt_rr_start_bounce - 1); changedSinceOpen_ = true; }
 		if (input.just_pressed(VK_RIGHT)) { settings_->pt_rr_start_bounce = std::min(16, settings_->pt_rr_start_bounce + 1); changedSinceOpen_ = true; }
 	} else if (sel_==idxRRMin_()) {
 		if (input.just_pressed(VK_LEFT)) { settings_->pt_rr_min_prob_pct = std::max(1, settings_->pt_rr_min_prob_pct - 1); changedSinceOpen_ = true; }
 		if (input.just_pressed(VK_RIGHT)) { settings_->pt_rr_min_prob_pct = std::min(90, settings_->pt_rr_min_prob_pct + 1); changedSinceOpen_ = true; }
+	} else if (sel_==idxFanoutCap_()) {
+		if (input.just_pressed(VK_LEFT)) { settings_->pt_fanout_cap = std::max(1000, settings_->pt_fanout_cap - 10000); changedSinceOpen_ = true; }
+		if (input.just_pressed(VK_RIGHT)) { settings_->pt_fanout_cap = std::min(10000000, settings_->pt_fanout_cap + 10000); changedSinceOpen_ = true; }
 	}
 	if (input.just_pressed(VK_PRIOR)) { scrollOffset_ -= (int)(winH*0.5); if (scrollOffset_<0) scrollOffset_=0; }
 	if (input.just_pressed(VK_NEXT)) { scrollOffset_ += (int)(winH*0.5); if (scrollOffset_>maxScroll_) scrollOffset_=maxScroll_; }
@@ -291,6 +360,14 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		else if (cy < panelTop && hitMid(cyPBR))   { settings_->pt_pbr_enable = settings_->pt_pbr_enable?0:1; sel_=idxPBREnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyFanoutEnable)) { settings_->pt_fanout_enable = settings_->pt_fanout_enable?0:1; sel_=idxFanoutEnable_(); changedSinceOpen_=true; }
 		else if (cy < panelTop && hitMid(cyFanoutAbort)) { settings_->pt_fanout_abort = settings_->pt_fanout_abort?0:1; sel_=idxFanoutAbort_(); changedSinceOpen_=true; }
+		// Phase 5 optimization toggles
+		else if (cy < panelTop && hitMid(cyBlueNoise)) { settings_->pt_use_blue_noise = settings_->pt_use_blue_noise?0:1; sel_=idxBlueNoise_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyCosWeight)) { settings_->pt_use_cosine_weighted = settings_->pt_use_cosine_weighted?0:1; sel_=idxCosineWeighted_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyStratified)) { settings_->pt_use_stratified = settings_->pt_use_stratified?0:1; sel_=idxStratified_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyHalton)) { settings_->pt_use_halton = settings_->pt_use_halton?0:1; sel_=idxHalton_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyAdaptShadow)) { settings_->pt_adaptive_shadows = settings_->pt_adaptive_shadows?0:1; sel_=idxAdaptiveShadows_(); changedSinceOpen_=true; }
+		else if (cy < panelTop && hitMid(cyBilateral)) { settings_->pt_use_bilateral = settings_->pt_use_bilateral?0:1; sel_=idxUseBilateral_(); changedSinceOpen_=true; }
+		// Gameplay toggles removed - now in main menu
 		// Segment tracer click removed
 		else if (cy >= panelTop) {
 			if (cx>=resetBtnR.left && cx<=resetBtnR.right && cy>=resetBtnR.top && cy<=resetBtnR.bottom) { resetDefaults(); sel_=idxReset_(); original_ = *settings_; }

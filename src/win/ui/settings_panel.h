@@ -62,7 +62,7 @@ private:
 
 	// Slider meta
 	struct SliderInfo { const wchar_t* label; int *val; int minv; int maxv; int step; };
-	static constexpr int kBaseSliderCount = 10; // + recording FPS slider
+	static constexpr int kBaseSliderCount = 14; // 11 original + 4 new phase 5 sliders
 
 	// index mapping after base sliders
 	int idxForce_() const { return kBaseSliderCount; }
@@ -75,8 +75,16 @@ private:
 	int idxFanoutEnable_() const { return kBaseSliderCount + 7; }
 	int idxFanoutCap_() const { return kBaseSliderCount + 8; }
 	int idxFanoutAbort_() const { return kBaseSliderCount + 9; }
-	int idxReset_() const { return kBaseSliderCount + 10; }
-	int totalItems_() const { return kBaseSliderCount + 10; }
+	// Phase 5 optimization toggles
+	int idxBlueNoise_() const { return kBaseSliderCount + 10; }
+	int idxCosineWeighted_() const { return kBaseSliderCount + 11; }
+	int idxStratified_() const { return kBaseSliderCount + 12; }
+	int idxHalton_() const { return kBaseSliderCount + 13; }
+	int idxAdaptiveShadows_() const { return kBaseSliderCount + 14; }
+	int idxUseBilateral_() const { return kBaseSliderCount + 15; }
+	// Gameplay toggles removed - now in main menu
+	int idxReset_() const { return kBaseSliderCount + 16; }
+	int totalItems_() const { return kBaseSliderCount + 16; }
 
 	void clampSel();
 	void resetDefaults();

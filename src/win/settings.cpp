@@ -64,6 +64,17 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("pt_soft_shadow_samples", s.pt_soft_shadow_samples);
     extractInt("pt_light_radius_pct", s.pt_light_radius_pct);
     extractInt("pt_pbr_enable", s.pt_pbr_enable);
+    // Phase 5: Advanced optimization settings
+    extractInt("pt_tile_size", s.pt_tile_size);
+    extractInt("pt_use_blue_noise", s.pt_use_blue_noise);
+    extractInt("pt_use_cosine_weighted", s.pt_use_cosine_weighted);
+    extractInt("pt_use_stratified", s.pt_use_stratified);
+    extractInt("pt_use_halton", s.pt_use_halton);
+    extractInt("pt_adaptive_shadows", s.pt_adaptive_shadows);
+    extractInt("pt_use_bilateral", s.pt_use_bilateral);
+    extractInt("pt_bilateral_sigma_space", s.pt_bilateral_sigma_space);
+    extractInt("pt_bilateral_sigma_color", s.pt_bilateral_sigma_color);
+    extractInt("pt_light_cull_distance", s.pt_light_cull_distance);
     // Recording mode
     extractInt("recording_mode", s.recording_mode);
         extractInt("player_mode", s.player_mode);
