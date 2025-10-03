@@ -8,6 +8,7 @@
 
 #pragma once
 #include <string>
+#include "game_mode_config.h"
 
 /**
  * @brief Game settings structure
@@ -21,7 +22,11 @@ struct Settings {
     int ai = 1;           ///< AI difficulty: 0=easy, 1=normal, 2=hard
     int renderer = 0;     ///< 0=classic GDI, 1=path tracer
     int quality = 1;      ///< Deprecated quality preset (legacy)
-    int game_mode = 0;    ///< Game mode: 0=Classic,1=ThreeEnemies,2=Obstacles,3=MultiBall
+    int game_mode = 0;    ///< Game mode: 0=Classic,1=ThreeEnemies,2=Obstacles,3=MultiBall (DEPRECATED - use mode_config)
+    
+    // Game mode configuration (replaces simple game_mode enum)
+    GameModeConfig mode_config;
+    
     // New path tracer parameter sliders (persisted as ints for simplicity)
     int pt_rays_per_frame = 10;     ///< Total primary rays per frame (distributed over render target)
     int pt_max_bounces = 1;           ///< Maximum bounces (1-8 reasonable)
@@ -50,6 +55,7 @@ struct Settings {
     int player_mode = 0;               ///< 0=1P vs AI, 1=2 Players, 2=AI vs AI
     // Recording
     int recording_fps = 60;            ///< Target recording FPS (15..60)
+    int recording_duration = 60;       ///< Recording duration in seconds (10..3600, 0=unlimited)
     // Physics / HUD
     int physics_mode = 1;              ///< 0=Arcade physics, 1=Physically-based paddle bounce
     int speed_mode = 0;                ///< 1="I am Speed" mode: no max speed, auto-acceleration

@@ -32,6 +32,7 @@
 #include "input/input_state.h"
 #include "ui/main_menu_view.h"
 #include "ui/settings_panel.h"
+#include "ui/game_mode_settings_view.h"
 
 static inline int iround(double v) { return (int)(v >= 0.0 ? v + 0.5 : v - 0.5); }
 
@@ -64,6 +65,10 @@ struct RecordingState {
     double simTime = 0.0;               // accumulated simulated time
     double fixedStep = 1.0/60.0;        // fixed timestep for recording
     int fps = 60;                       // target recording fps (derived from settings.recording_fps)
+    int duration = 0;                   // recording duration in seconds (0=unlimited)
+    std::chrono::steady_clock::time_point startTime; // real time start for FPS calculation
+    int framesAtLastCheck = 0;          // frames at last FPS check
+    double realFps = 0.0;               // actual frames per second being recorded
 };
 
 static UINT query_dpi(HWND hwnd, int current) {
@@ -121,9 +126,11 @@ int run_win_pong(HINSTANCE inst, int show) {
 
     bool settings_changed=false; int menuIndex=0; MainMenuView menu; menu.init(&settings,&settingsMgr,&hsMgr,&highs,&hsPath,&exeDir);
     SettingsPanel settingsPanel; bool settingsOpen=false;
+    GameModeSettingsView gameModeView; bool gameModeOpen=false;
     HighScoresView scoresView; bool scoresOpen=false;
     auto openScores=[&](){ scoresView.begin(&highs); scoresOpen=true; st.ui_mode=2; };
     auto openSettings=[&](){ if(renderer!=R_PATH) return; settingsPanel.begin(hwnd,inst,&settings,&settingsMgr,&exeDir); settingsOpen=true; st.ui_mode=2; };
+    auto openGameMode=[&](){ gameModeView.begin(&settings.mode_config); gameModeOpen=true; st.ui_mode=2; };
 
     // Renderers / HUD / State machine loop
     ClassicRenderer classic; PTRendererAdapter ptAdapter; HudOverlay hud;    
@@ -169,23 +176,26 @@ int run_win_pong(HINSTANCE inst, int show) {
             if(r.action){
                 switch(*r.action){
                     case MenuAction::Play: {
-                        // Set game mode based on settings before reset
-                        switch(settings.game_mode){
-                            case 0: session.core().set_mode(GameMode::Classic); break;
-                            case 1: session.core().set_mode(GameMode::ThreeEnemies); break;
-                            case 2: session.core().set_mode(GameMode::Obstacles); break;
-                            case 3: session.core().set_mode(GameMode::MultiBall); break;
-                            case 4: session.core().set_mode(GameMode::ObstaclesMulti); break;
-                        }
                         // Apply physics mode toggle (0 arcade, 1 physical)
                         session.core().set_physical_mode(settings.physics_mode==1);
                         // Apply speed mode toggle (0 normal, 1 speed mode)
                         session.core().set_speed_mode(settings.speed_mode==1);
+                        // Reset clears state, then apply game mode configuration
+                        session.core().reset();
+                        session.core().apply_mode_config(
+                            settings.mode_config.multiball,
+                            settings.mode_config.obstacles,
+                            settings.mode_config.obstacles_moving,
+                            settings.mode_config.blackholes,
+                            settings.mode_config.blackholes_moving,
+                            settings.mode_config.blackhole_count,
+                            settings.mode_config.multiball_count,
+                            settings.mode_config.three_enemies
+                        );
                         // Transition to gameplay: clear backbuffer and reset PT history so menu isn't blended over
                         st.ui_mode=0; 
                         HBRUSH black=(HBRUSH)GetStockObject(BLACK_BRUSH); RECT clr{0,0,winW,winH}; FillRect(st.memDC,&clr,black);
                         if(renderer==R_PATH) { ptAdapter.resize(winW,winH); } // triggers history reset inside resize
-                        session.core().reset();
                         // If recording mode toggle is on, initialize recording session
                         if(settings.recording_mode && !rec.active){
                             // Create output directory with timestamp
@@ -194,9 +204,13 @@ int run_win_pong(HINSTANCE inst, int show) {
                             rec.dir = exeDir + buf;
                             std::error_code fec; std::filesystem::create_directories(rec.dir, fec);
                             rec.active = true; rec.frameIndex = 0; rec.simTime = 0.0;
+                            rec.startTime = std::chrono::steady_clock::now();
+                            rec.framesAtLastCheck = 0;
+                            rec.realFps = 0.0;
                             // Apply user-selected recording FPS (clamped by persistence layer 15..60)
                             if(settings.recording_fps < 15) settings.recording_fps = 15; else if(settings.recording_fps > 60) settings.recording_fps = 60;
                             rec.fps = settings.recording_fps;
+                            rec.duration = settings.recording_duration;
                             int clampFps = settings.recording_fps;
                             if(clampFps < 15) clampFps = 15; else if(clampFps > 60) clampFps = 60;
                             rec.fixedStep = 1.0 / (double)clampFps;
@@ -204,16 +218,21 @@ int run_win_pong(HINSTANCE inst, int show) {
                         break; }
                     case MenuAction::Settings: openSettings(); break;
                     case MenuAction::Scores: openScores(); break;
+                    case MenuAction::GameMode: openGameMode(); break;
                     case MenuAction::Quit: st.running=false; break;
                     case MenuAction::Back: break;
                 }
             }
             if(settings_changed){ settingsMgr.save(exeDir+L"settings.json",settings); settings_changed=false; }
-        } else if(st.ui_mode == 2){ // MODAL (settings or scores)
+        } else if(st.ui_mode == 2){ // MODAL (settings or scores or game mode)
             if(settingsOpen){
                 auto act = settingsPanel.frame(st.memDC, winW, winH, dpi, st.inputRouter?st.inputRouter->get():InputState{}, st.mouse_x, st.mouse_y, st.mouse_pressed, st.mouse_wheel_delta, st.last_click_x, st.last_click_y);
                 if(act==SettingsPanel::Action::Commit){ if(settingsPanel.anyChangesSinceOpen()) settings_changed=true; settingsOpen=false; st.ui_mode=1; }
                 else if(act==SettingsPanel::Action::Cancel){ settingsOpen=false; st.ui_mode=1; }
+            } else if(gameModeOpen){
+                auto act = gameModeView.frame(st.memDC, winW, winH, dpi, st.inputRouter?st.inputRouter->get():InputState{}, st.mouse_x, st.mouse_y, st.mouse_pressed, st.mouse_wheel_delta, st.last_click_x, st.last_click_y);
+                if(act==GameModeSettingsView::Action::Commit){ if(gameModeView.anyChangesSinceOpen()) settings_changed=true; gameModeOpen=false; st.ui_mode=1; }
+                else if(act==GameModeSettingsView::Action::Cancel){ gameModeOpen=false; st.ui_mode=1; }
             } else if(scoresOpen){
                 const InputState &is = st.inputRouter?st.inputRouter->get():InputState{};
                 int deleted=-1; bool delReq = is.just_pressed(VK_DELETE) || (is.click && (GetKeyState(VK_CONTROL)&0x8000));
@@ -288,18 +307,53 @@ int run_win_pong(HINSTANCE inst, int show) {
                 hud.draw(gs, renderer==R_PATH?ptAdapter.stats():nullptr, st.memDC, winW, winH, dpi, highScore);
             }
             if(rec.active){
+                // Calculate actual recording FPS every second
+                auto recNow = std::chrono::steady_clock::now();
+                double recElapsed = std::chrono::duration<double>(recNow - rec.startTime).count();
+                if(recElapsed >= 1.0 && rec.frameIndex > rec.framesAtLastCheck){
+                    rec.realFps = (rec.frameIndex - rec.framesAtLastCheck) / recElapsed;
+                    rec.startTime = recNow;
+                    rec.framesAtLastCheck = rec.frameIndex;
+                }
+                
                 // Recording info panel to the right of standard HUD (HUD width ~280px)
-                int boxW = 220; int boxX = 300; int boxY = 0; int boxH = 90;
+                int boxW = 260; int boxX = 300; int boxY = 0; int boxH = 150;
                 HBRUSH rb = CreateSolidBrush(RGB(8,8,12)); RECT rr{boxX,boxY,boxX+boxW,boxY+boxH}; FillRect(st.memDC,&rr,rb); DeleteObject(rb);
                 SetBkMode(st.memDC, TRANSPARENT); SetTextColor(st.memDC, RGB(255,80,80));
                 wchar_t recTxt[128]; swprintf(recTxt,128,L"RECORDING %dfps", rec.fps);
                 RECT r1{boxX+8,boxY+6,boxX+boxW-8,boxY+26}; DrawTextW(st.memDC, recTxt, -1, &r1, DT_LEFT|DT_TOP|DT_SINGLELINE);
                 int fpsDiv = rec.fps < 1 ? 1 : rec.fps;
-                double seconds = rec.frameIndex / (double)fpsDiv;
+                double simSeconds = rec.frameIndex / (double)fpsDiv;
                 wchar_t meta[128]; swprintf(meta,128,L"Frames: %d", rec.frameIndex);
                 RECT r2{boxX+8,boxY+28,boxX+boxW-8,boxY+48}; DrawTextW(st.memDC, meta, -1, &r2, DT_LEFT|DT_TOP|DT_SINGLELINE);
-                wchar_t meta2[128]; swprintf(meta2,128,L"Time: %.1fs", seconds);
+                wchar_t meta2[128]; swprintf(meta2,128,L"Sim Time: %.1fs", simSeconds);
                 RECT r3{boxX+8,boxY+48,boxX+boxW-8,boxY+68}; DrawTextW(st.memDC, meta2, -1, &r3, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                
+                // Show actual recording FPS and time estimates
+                if(rec.realFps > 0.1){
+                    wchar_t fpsTxt[128]; swprintf(fpsTxt,128,L"Actual: %.1f fps", rec.realFps);
+                    RECT r4{boxX+8,boxY+68,boxX+boxW-8,boxY+88}; DrawTextW(st.memDC, fpsTxt, -1, &r4, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                    
+                    // Duration-based progress
+                    if(rec.duration > 0){
+                        int targetFrames = rec.duration * rec.fps;
+                        int remaining = targetFrames - rec.frameIndex;
+                        if(remaining < 0) remaining = 0;
+                        double estSeconds = remaining / rec.realFps;
+                        int mins = (int)(estSeconds / 60.0);
+                        int secs = (int)(estSeconds) % 60;
+                        wchar_t estTxt[128]; swprintf(estTxt,128,L"Est. Remaining: %dm %ds", mins, secs);
+                        RECT r5{boxX+8,boxY+88,boxX+boxW-8,boxY+108}; DrawTextW(st.memDC, estTxt, -1, &r5, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                        
+                        int pct = targetFrames > 0 ? (rec.frameIndex * 100) / targetFrames : 0;
+                        if(pct > 100) pct = 100;
+                        wchar_t pctTxt[128]; swprintf(pctTxt,128,L"Progress: %d%%", pct);
+                        RECT r6{boxX+8,boxY+108,boxX+boxW-8,boxY+128}; DrawTextW(st.memDC, pctTxt, -1, &r6, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                    } else {
+                        wchar_t unlimTxt[128]; swprintf(unlimTxt,128,L"Duration: Unlimited");
+                        RECT r5{boxX+8,boxY+88,boxX+boxW-8,boxY+108}; DrawTextW(st.memDC, unlimTxt, -1, &r5, DT_LEFT|DT_TOP|DT_SINGLELINE);
+                    }
+                }
             }
         }
         // Menu or modal already drew into st.memDC; no HUD overlay in those modes.
@@ -338,8 +392,13 @@ int run_win_pong(HINSTANCE inst, int show) {
             }
         }
 
-        // Stop recording when user leaves gameplay (menu/modal) or game ends
-        if(rec.active && st.ui_mode != 0){
+        // Stop recording when duration reached, user leaves gameplay, or game ends
+        bool durationReached = false;
+        if(rec.active && rec.duration > 0){
+            int targetFrames = rec.duration * rec.fps;
+            if(rec.frameIndex >= targetFrames) durationReached = true;
+        }
+        if(rec.active && (st.ui_mode != 0 || durationReached)){
             // Write summary file
             std::wstring summary = rec.dir + L"recording_info.txt";
             std::ofstream s(summary);

@@ -10,6 +10,7 @@
 
 #include <string>
 #include <vector>
+#include "black_hole.h"
 
 /**
  * @brief Available game modes
@@ -76,6 +77,9 @@ struct GameState {
 
     // Multi-ball
     std::vector<BallState> balls;    ///< Active balls (ball_x/ball_y mirror balls[0])
+    
+    // Black holes
+    std::vector<BlackHole> blackholes; ///< Active black holes
 
     GameMode mode = GameMode::Classic; ///< Current game mode
 };
@@ -187,6 +191,13 @@ public:
      */
     void set_mode(GameMode m);
     GameMode mode() const { return s.mode; }
+    
+    /**
+     * @brief Apply game mode configuration from settings
+     */
+    void apply_mode_config(bool multiball, bool obstacles, bool obstacles_moving,
+                          bool blackholes, bool blackholes_moving, int blackhole_count,
+                          int multiball_count, bool three_enemies);
 
     /**
      * @brief Spawn an extra ball (used in MultiBall mode)
@@ -202,6 +213,20 @@ public:
      * @brief Access obstacles vector (read-only)
      */
     const std::vector<Obstacle>& get_obstacles() const { return s.obstacles; }
+    
+    /**
+     * @brief Access black holes vector (read-only)
+     */
+    const std::vector<BlackHole>& get_blackholes() const { return s.blackholes; }
+    
+    /**
+     * @brief Spawn a black hole at specified position
+     * 
+     * @param x X coordinate
+     * @param y Y coordinate
+     * @param moving Whether the black hole moves
+     */
+    void spawn_blackhole(double x, double y, bool moving);
 
 private:
     GameState s;                    ///< Current game state

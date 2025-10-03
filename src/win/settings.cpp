@@ -43,6 +43,24 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("renderer", s.renderer);
     extractInt("quality", s.quality);
     extractInt("game_mode", s.game_mode);
+    
+    // Load game mode config (new system)
+    int temp_int = 0;
+    extractInt("gm_multiball", temp_int); s.mode_config.multiball = (temp_int != 0);
+    extractInt("gm_multiball_count", s.mode_config.multiball_count);
+    extractInt("gm_obstacles", temp_int); s.mode_config.obstacles = (temp_int != 0);
+    extractInt("gm_obstacles_moving", temp_int); s.mode_config.obstacles_moving = (temp_int != 0);
+    extractInt("gm_blackholes", temp_int); s.mode_config.blackholes = (temp_int != 0);
+    extractInt("gm_blackholes_moving", temp_int); s.mode_config.blackholes_moving = (temp_int != 0);
+    extractInt("gm_blackhole_count", s.mode_config.blackhole_count);
+    extractInt("gm_three_enemies", temp_int); s.mode_config.three_enemies = (temp_int != 0);
+    
+    // Validate game mode config
+    if(s.mode_config.multiball_count < 2) s.mode_config.multiball_count = 2;
+    if(s.mode_config.multiball_count > 5) s.mode_config.multiball_count = 5;
+    if(s.mode_config.blackhole_count < 1) s.mode_config.blackhole_count = 1;
+    if(s.mode_config.blackhole_count > 5) s.mode_config.blackhole_count = 5;
+    
     extractInt("pt_rays_per_frame", s.pt_rays_per_frame);
     extractInt("pt_max_bounces", s.pt_max_bounces);
     extractInt("pt_internal_scale", s.pt_internal_scale);
@@ -79,6 +97,7 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("recording_mode", s.recording_mode);
         extractInt("player_mode", s.player_mode);
         extractInt("recording_fps", s.recording_fps);
+        extractInt("recording_duration", s.recording_duration);
         extractInt("physics_mode", s.physics_mode);
         extractInt("speed_mode", s.speed_mode);
         extractInt("hud_show_play", s.hud_show_play);
@@ -106,6 +125,17 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"renderer\": " << s.renderer << ",\n";
     ofs << "  \"quality\": " << s.quality << ",\n"; // legacy
     ofs << "  \"game_mode\": " << s.game_mode << ",\n";
+    
+    // Save game mode config (new system)
+    ofs << "  \"gm_multiball\": " << (s.mode_config.multiball ? 1 : 0) << ",\n";
+    ofs << "  \"gm_multiball_count\": " << s.mode_config.multiball_count << ",\n";
+    ofs << "  \"gm_obstacles\": " << (s.mode_config.obstacles ? 1 : 0) << ",\n";
+    ofs << "  \"gm_obstacles_moving\": " << (s.mode_config.obstacles_moving ? 1 : 0) << ",\n";
+    ofs << "  \"gm_blackholes\": " << (s.mode_config.blackholes ? 1 : 0) << ",\n";
+    ofs << "  \"gm_blackholes_moving\": " << (s.mode_config.blackholes_moving ? 1 : 0) << ",\n";
+    ofs << "  \"gm_blackhole_count\": " << s.mode_config.blackhole_count << ",\n";
+    ofs << "  \"gm_three_enemies\": " << (s.mode_config.three_enemies ? 1 : 0) << ",\n";
+    
     ofs << "  \"pt_rays_per_frame\": " << s.pt_rays_per_frame << ",\n";
     ofs << "  \"pt_max_bounces\": " << s.pt_max_bounces << ",\n";
     ofs << "  \"pt_internal_scale\": " << s.pt_internal_scale << ",\n";
@@ -129,6 +159,7 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"recording_mode\": " << s.recording_mode << "\n";
         ofs << "  \"player_mode\": " << s.player_mode << ",\n";
         ofs << "  \"recording_fps\": " << s.recording_fps << ",\n";
+        ofs << "  \"recording_duration\": " << s.recording_duration << ",\n";
         ofs << "  \"physics_mode\": " << s.physics_mode << ",\n";
         ofs << "  \"speed_mode\": " << s.speed_mode << ",\n";
         ofs << "  \"hud_show_play\": " << s.hud_show_play << ",\n";

@@ -28,6 +28,8 @@ void HudOverlay::draw(const GameState& gs, const SRStats* stats, HDC dc, int w, 
 	drawText(dc, L"Mode: " + modeName, xPad, yPad + lineH*line++);
 	if(stats){
 		wchar_t buf[256];
+		// Display FPS prominently
+		swprintf(buf,256,L"FPS: %.1f", stats->fps); drawText(dc, buf, xPad, yPad + lineH*line++);
 		// Add packet tracing mode indicator
 		std::wstring modeStr = L"";
 		if (stats->packetMode == 8) modeStr = L" [AVX 8-wide]";

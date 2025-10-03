@@ -484,6 +484,7 @@ SoftRenderer::SoftRenderer() {
     // Phase 4: Initialize CPU feature detection
     detectCPUFeatures();
     configure(config);
+    lastFrameTime = std::chrono::steady_clock::now();
 }
 
 SoftRenderer::~SoftRenderer() {}
@@ -1617,6 +1618,19 @@ void SoftRenderer::render(const GameState &gs) {
             obsBoxes.push_back({mn,mx});
         }
     }
+    
+    // Black holes as dark spheres
+    std::vector<Vec3> blackholeCenters;
+    std::vector<float> blackholeRs;
+    if (!gs.blackholes.empty()) {
+        for (auto &bh : gs.blackholes) {
+            Vec3 c = toWorld((float)bh.x, (float)bh.y);
+            float r = 0.15f;  // Black hole radius in world space
+            blackholeCenters.push_back(c);
+            blackholeRs.push_back(r);
+        }
+    }
+    
     float paddleThickness = 0.05f;
     
     // Phase 6: Pre-compute scene bounds for spatial culling
@@ -1698,7 +1712,7 @@ void SoftRenderer::render(const GameState &gs) {
     
     // Phase 8: Build BVH primitives list (using indices, not pointers, to avoid corruption)
     std::vector<BVHPrimitive> bvhPrimitives;
-    bvhPrimitives.reserve(ballCenters.size() + 4 + obsBoxes.size());  // Pre-allocate to avoid reallocation
+    bvhPrimitives.reserve(ballCenters.size() + blackholeCenters.size() + 4 + obsBoxes.size());  // Pre-allocate to avoid reallocation
     
     // Add balls to BVH
     for (size_t i = 0; i < ballCenters.size(); ++i) {
@@ -1709,6 +1723,18 @@ void SoftRenderer::render(const GameState &gs) {
         prim.objIndex = (int)i;
         prim.mat = 1;  // emissive
         prim.objId = (int)i;
+        bvhPrimitives.push_back(prim);
+    }
+    
+    // Add black holes to BVH (objType = 3, non-emissive, dark material)
+    for (size_t i = 0; i < blackholeCenters.size(); ++i) {
+        BVHPrimitive prim;
+        prim.bmin = blackholeCenters[i] - Vec3{blackholeRs[i], blackholeRs[i], blackholeRs[i]};
+        prim.bmax = blackholeCenters[i] + Vec3{blackholeRs[i], blackholeRs[i], blackholeRs[i]};
+        prim.objType = 3;  // black hole
+        prim.objIndex = (int)i;
+        prim.mat = 0;  // diffuse, non-emissive
+        prim.objId = 400 + (int)i;  // Use 400+ range for black holes
         bvhPrimitives.push_back(prim);
     }
     
@@ -2613,6 +2639,9 @@ void SoftRenderer::render(const GameState &gs) {
                                                 if (prim.objType == 0) {
                                                     int bi = prim.objIndex;
                                                     intersectSphere8(packet8, ballCenters[bi], ballRs[bi], tMax8, hit8, prim.mat);
+                                                } else if (prim.objType == 3) {
+                                                    int bi = prim.objIndex;
+                                                    intersectSphere8(packet8, blackholeCenters[bi], blackholeRs[bi], tMax8, hit8, prim.mat);
                                                 } else if (prim.objType == 1) {
                                                     intersectBox8(packet8, prim.bmin, prim.bmax, tMax8, hit8, prim.mat);
                                                 } else if (prim.objType == 2) {
@@ -2754,6 +2783,11 @@ void SoftRenderer::render(const GameState &gs) {
                                                         if (prim.objType == 0) {
                                                             int bi = prim.objIndex;
                                                             if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 3) {
+                                                            int bi = prim.objIndex;
+                                                            if (intersectSphere(ro, rd, blackholeCenters[bi], blackholeRs[bi], best.t, tmp, prim.mat)) {
                                                                 best = tmp; best.objId = prim.objId; hit = true;
                                                             }
                                                         } else if (prim.objType == 1) {
@@ -2943,6 +2977,10 @@ void SoftRenderer::render(const GameState &gs) {
                                                     // Ball (sphere)
                                                     int bi = prim.objIndex;
                                                     intersectSphere4(packet, ballCenters[bi], ballRs[bi], tMax, hit4, prim.mat);
+                                                } else if (prim.objType == 3) {
+                                                    // Black hole (sphere)
+                                                    int bi = prim.objIndex;
+                                                    intersectSphere4(packet, blackholeCenters[bi], blackholeRs[bi], tMax, hit4, prim.mat);
                                                 } else if (prim.objType == 1) {
                                                     // Paddle (box)
                                                     intersectBox4(packet, prim.bmin, prim.bmax, tMax, hit4, prim.mat);
@@ -3091,6 +3129,11 @@ void SoftRenderer::render(const GameState &gs) {
                                                         if (prim.objType == 0) {
                                                             int bi = prim.objIndex;
                                                             if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                                best = tmp; best.objId = prim.objId; hit = true;
+                                                            }
+                                                        } else if (prim.objType == 3) {
+                                                            int bi = prim.objIndex;
+                                                            if (intersectSphere(ro, rd, blackholeCenters[bi], blackholeRs[bi], best.t, tmp, prim.mat)) {
                                                                 best = tmp; best.objId = prim.objId; hit = true;
                                                             }
                                                         } else if (prim.objType == 1) {
@@ -3346,6 +3389,13 @@ void SoftRenderer::render(const GameState &gs) {
                                                 sphereMats[sphereCount] = prim.mat;
                                                 sphereObjIds[sphereCount] = prim.objId;
                                                 sphereCount++;
+                                            } else if (prim.objType == 3) {  // Black hole (sphere)
+                                                int bi = prim.objIndex;
+                                                sphereCenters[sphereCount] = blackholeCenters[bi];
+                                                sphereRadii[sphereCount] = blackholeRs[bi];
+                                                sphereMats[sphereCount] = prim.mat;
+                                                sphereObjIds[sphereCount] = prim.objId;
+                                                sphereCount++;
                                             } else if (firstNonSphere == -1) {
                                                 firstNonSphere = i;  // Remember first non-sphere for fallback
                                                 break;  // Stop collecting spheres once we hit non-sphere
@@ -3368,6 +3418,14 @@ void SoftRenderer::render(const GameState &gs) {
                                                 // Ball (sphere) - fallback to scalar for remaining spheres
                                                 int bi = prim.objIndex;
                                                 if (intersectSphere(ro, rd, ballCenters[bi], ballRs[bi], best.t, tmp, prim.mat)) {
+                                                    best = tmp;
+                                                    best.objId = prim.objId;
+                                                    hit = true;
+                                                }
+                                            } else if (prim.objType == 3) {
+                                                // Black hole (sphere) - fallback to scalar
+                                                int bi = prim.objIndex;
+                                                if (intersectSphere(ro, rd, blackholeCenters[bi], blackholeRs[bi], best.t, tmp, prim.mat)) {
                                                     best = tmp;
                                                     best.objId = prim.objId;
                                                     hit = true;
@@ -3824,6 +3882,19 @@ void SoftRenderer::render(const GameState &gs) {
     auto tUpscaleEnd = clock::now();
     stats_.msUpscale = std::chrono::duration<float, std::milli>(tUpscaleEnd - t0).count();
     stats_.msTotal = std::chrono::duration<float, std::milli>(tUpscaleEnd - tStart).count();
+    
+    // Calculate FPS with exponential moving average for smoothing
+    auto currentTime = clock::now();
+    float actualFrameTime = std::chrono::duration<float, std::milli>(currentTime - lastFrameTime).count();
+    lastFrameTime = currentTime;
+    
+    // Smooth frame time using EMA (alpha = 0.1 for stability)
+    const float alpha = 0.1f;
+    smoothedFrameTime = alpha * actualFrameTime + (1.0f - alpha) * smoothedFrameTime;
+    
+    // Calculate FPS from smoothed frame time (avoid division by zero)
+    stats_.fps = (smoothedFrameTime > 0.001f) ? (1000.0f / smoothedFrameTime) : 0.0f;
+    
     // Feed adaptive controller for next frame
     g_srLastFrameMs.store(stats_.msTotal, std::memory_order_relaxed);
 }

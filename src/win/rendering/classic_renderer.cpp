@@ -88,6 +88,34 @@ void ClassicRenderer::render(const GameState& gs, HDC dc, int winW, int winH, in
 		SelectObject(dc, nullPen); SelectObject(dc, old); DeleteObject(obBrush);
 	}
 
+	// Black holes
+	if (!gs.blackholes.empty()) {
+		for (auto &bh : gs.blackholes) {
+			int cx = mapX(bh.x);
+			int cy = mapY(bh.y);
+			int radius = (std::max)(8, (int)(16*ui+0.5));
+			
+			// Draw outer glow/event horizon (dark purple)
+			HBRUSH glowBrush = CreateSolidBrush(RGB(80, 40, 120));
+			HBRUSH oldBrush = (HBRUSH)SelectObject(dc, glowBrush);
+			HPEN oldPen = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+			Ellipse(dc, cx - radius, cy - radius, cx + radius, cy + radius);
+			SelectObject(dc, oldPen);
+			SelectObject(dc, oldBrush);
+			DeleteObject(glowBrush);
+			
+			// Draw inner core (black)
+			int innerRadius = radius / 2;
+			HBRUSH coreBrush = CreateSolidBrush(RGB(0, 0, 0));
+			oldBrush = (HBRUSH)SelectObject(dc, coreBrush);
+			oldPen = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+			Ellipse(dc, cx - innerRadius, cy - innerRadius, cx + innerRadius, cy + innerRadius);
+			SelectObject(dc, oldPen);
+			SelectObject(dc, oldBrush);
+			DeleteObject(coreBrush);
+		}
+	}
+
 	// Horizontal enemy paddles (top/bottom)
 	if (gs.mode == GameMode::ThreeEnemies) {
 		int halfW = (int)((gs.paddle_w / (double)gs.gw) * winW * 0.5);

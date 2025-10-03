@@ -34,6 +34,7 @@ void SettingsPanel::resetDefaults() {
 	settings_->pt_light_radius_pct = 100;
 	settings_->pt_pbr_enable = 1;
 	settings_->recording_fps = 60;
+	settings_->recording_duration = 60;
 	// Phase 5 optimization defaults
 	settings_->pt_tile_size = 16;
 	settings_->pt_use_blue_noise = 1;
@@ -83,6 +84,7 @@ SettingsPanel::Action SettingsPanel::frame(HDC memDC,
 		{L"Soft Shadow Spp", &settings_->pt_soft_shadow_samples, 1, 64, 1},
 		{L"Light Radius %", &settings_->pt_light_radius_pct, 10, 500, 1},
 		{L"Recording FPS", &settings_->recording_fps, 15, 60, 1},
+		{L"Recording Duration (s)", &settings_->recording_duration, 0, 3600, 10},
 		{L"Tile Size", &settings_->pt_tile_size, 4, 64, 4},
 		{L"Bilateral Sigma Space", &settings_->pt_bilateral_sigma_space, 1, 100, 1},
 		{L"Bilateral Sigma Color", &settings_->pt_bilateral_sigma_color, 1, 100, 1},

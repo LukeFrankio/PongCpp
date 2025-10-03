@@ -30,6 +30,7 @@
 #include <vector>
 #include <cstdint>
 #include <cmath>
+#include <chrono>
 #include "../core/game_core.h"
 
 struct SRConfig {
@@ -107,6 +108,7 @@ struct SRStats {
     bool denoiseSkipped = false;     // true when denoise pass skipped due to quality heuristic
     int threadsUsed = 1;             // number of threads used in last render (includes main)
     int packetMode = 0;              // 0=scalar, 4=SSE 4-wide, 8=AVX 8-wide packet tracing
+    float fps = 0.0f;                // frames per second (calculated from msTotal)
 };
 
 class SoftRenderer {
@@ -140,6 +142,10 @@ private:
     std::vector<uint32_t> pixel32; // packed BGRA for GDI (A unused)
     unsigned frameCounter = 0;
     SRStats stats_{};              // last frame statistics
+    
+    // FPS calculation
+    std::chrono::steady_clock::time_point lastFrameTime;
+    float smoothedFrameTime = 16.67f;  // Initialize to ~60fps
     
     // Phase 2: Pre-allocated scratch buffers with SoA layout
     std::vector<float> hdrR, hdrG, hdrB;          // HDR working buffers (separate channels)

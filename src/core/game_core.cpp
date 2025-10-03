@@ -48,6 +48,10 @@ void GameCore::reset() {
         for (int i=0;i<2;i++) spawn_ball(0.9 + 0.2*i);
     }
     
+    // Black holes are set by apply_mode_config, not reset
+    // but we clear them here to be safe
+    s.blackholes.clear();
+    
     // Reset scores
     s.score_left = 0; s.score_right = 0;
     
@@ -79,10 +83,25 @@ void GameCore::update(double dt) {
                 if (ob.y - ob.h/2 < 1 || ob.y + ob.h/2 > s.gh-1) ob.vy = -ob.vy;
             }
         }
+        
+        // Update black holes
+        for (auto &bh : s.blackholes) {
+            bh.update(step, s.gw, s.gh);
+        }
 
         // Multi-ball / single ball iteration
         for (size_t bi=0; bi<s.balls.size(); ++bi) {
             BallState &b = s.balls[bi];
+            
+            // Apply black hole gravitational forces
+            for (const auto &bh : s.blackholes) {
+                double fx, fy;
+                bh.calculateForce(b.x, b.y, fx, fy);
+                // Apply force as acceleration (F = ma, assuming unit mass)
+                b.vx += fx * step;
+                b.vy += fy * step;
+            }
+            
             b.x += b.vx * step;
             b.y += b.vy * step;
             if (s.mode != GameMode::ThreeEnemies) {
@@ -336,6 +355,74 @@ void GameCore::update(double dt) {
 
         for (auto &b : s.balls) process_ball(b);
 
+        // Ball-to-ball collision detection (for multi-ball modes)
+        if (s.balls.size() > 1) {
+            for (size_t i = 0; i < s.balls.size(); ++i) {
+                for (size_t j = i + 1; j < s.balls.size(); ++j) {
+                    BallState &b1 = s.balls[i];
+                    BallState &b2 = s.balls[j];
+                    
+                    // Calculate distance between ball centers
+                    double dx = b2.x - b1.x;
+                    double dy = b2.y - b1.y;
+                    double dist_sq = dx*dx + dy*dy;
+                    double collision_dist = 2.0 * ball_r; // sum of radii
+                    double collision_dist_sq = collision_dist * collision_dist;
+                    
+                    if (dist_sq < collision_dist_sq && dist_sq > 1e-6) {
+                        // Balls are colliding
+                        double dist = std::sqrt(dist_sq);
+                        
+                        // Normalized collision normal (from b1 to b2)
+                        double nx = dx / dist;
+                        double ny = dy / dist;
+                        
+                        // Separate balls to prevent overlap
+                        double overlap = collision_dist - dist;
+                        double separation = overlap / 2.0 + 0.01; // small extra push
+                        b1.x -= nx * separation;
+                        b1.y -= ny * separation;
+                        b2.x += nx * separation;
+                        b2.y += ny * separation;
+                        
+                        // Calculate relative velocity
+                        double dvx = b2.vx - b1.vx;
+                        double dvy = b2.vy - b1.vy;
+                        
+                        // Relative velocity in collision normal direction
+                        double dvn = dvx * nx + dvy * ny;
+                        
+                        // Only resolve if balls are approaching (not separating)
+                        if (dvn < 0) {
+                            // Elastic collision with restitution
+                            double impulse = -(1.0 + restitution) * dvn / 2.0;
+                            
+                            // Apply impulse to both balls (equal mass assumption)
+                            b1.vx -= impulse * nx;
+                            b1.vy -= impulse * ny;
+                            b2.vx += impulse * nx;
+                            b2.vy += impulse * ny;
+                            
+                            // Apply speed cap if not in speed mode
+                            if (!speed_mode) {
+                                double maxsp = 90.0;
+                                double sp1 = std::sqrt(b1.vx*b1.vx + b1.vy*b1.vy);
+                                if (sp1 > maxsp) {
+                                    b1.vx *= maxsp / sp1;
+                                    b1.vy *= maxsp / sp1;
+                                }
+                                double sp2 = std::sqrt(b2.vx*b2.vx + b2.vy*b2.vy);
+                                if (sp2 > maxsp) {
+                                    b2.vx *= maxsp / sp2;
+                                    b2.vy *= maxsp / sp2;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // AI for right paddle (performed per frame, fine-grained control above)
         // (AI update outside of substep loop - handled after loop)
     }
@@ -451,4 +538,93 @@ void GameCore::spawn_ball(double speed_scale) {
     BallState b; b.x = s.gw/2.0; b.y = s.gh/2.0; b.vx = dir*speed; b.vy = speed*0.5;
     s.balls.push_back(b);
 }
+
+void GameCore::spawn_blackhole(double x, double y, bool moving) {
+    BlackHole bh;
+    bh.x = x;
+    bh.y = y;
+    bh.moving = moving;
+    if (moving) {
+        // Random velocity for moving black holes
+        double angle = (s.blackholes.size() * 1.2) + 0.5;
+        bh.vx = 10.0 * std::cos(angle);
+        bh.vy = 10.0 * std::sin(angle);
+    }
+    bh.strength = 500.0;
+    bh.radius = 2.0;
+    bh.influence = 100.0;
+    s.blackholes.push_back(bh);
+}
+
+void GameCore::apply_mode_config(bool multiball, bool obstacles, bool obstacles_moving,
+                                bool blackholes, bool blackholes_moving, int blackhole_count,
+                                int multiball_count, bool three_enemies) {
+    // Set mode enum based on combination of flags (for legacy compatibility)
+    if (obstacles && multiball) {
+        s.mode = GameMode::ObstaclesMulti;
+    } else if (multiball) {
+        s.mode = GameMode::MultiBall;
+    } else if (obstacles) {
+        s.mode = GameMode::Obstacles;
+    } else if (three_enemies) {
+        s.mode = GameMode::ThreeEnemies;
+    } else {
+        s.mode = GameMode::Classic;
+    }
+    
+    // Clear existing dynamic objects
+    s.balls.clear();
+    s.obstacles.clear();
+    s.blackholes.clear();
+    
+    // Always have at least one ball
+    s.balls.push_back({s.gw/2.0, s.gh/2.0, 20.0, 10.0});
+    vx = 20.0; vy = 10.0; // Keep legacy velocities in sync
+    
+    // Add extra balls for multiball
+    if (multiball) {
+        for (int i = 1; i < multiball_count; ++i) {
+            spawn_ball(0.9 + 0.1 * i);
+        }
+    }
+    
+    // Add obstacles
+    if (obstacles) {
+        int count = 3;
+        for (int i=0;i<count;++i) {
+            double fx = s.gw/2.0 + (i-1)*10.0;
+            double fy = s.gh/2.0 + (i-1)*2.0;
+            Obstacle ob; 
+            ob.x = fx; ob.y = fy; ob.w = 4; ob.h = 3;
+            if (obstacles_moving) {
+                ob.vx = (i-1)*5.0; 
+                ob.vy = (i%2==0?5.0:-5.0);
+            } else {
+                ob.vx = 0.0;
+                ob.vy = 0.0;
+            }
+            s.obstacles.push_back(ob);
+        }
+    }
+    
+    // Add black holes
+    if (blackholes) {
+        if (blackhole_count == 1) {
+            spawn_blackhole(s.gw/2.0, s.gh/2.0, blackholes_moving);
+        } else {
+            // Distribute multiple black holes
+            for (int i = 0; i < blackhole_count; ++i) {
+                double angle = (i * 2.0 * 3.14159) / blackhole_count;
+                double radius = 15.0;
+                double bx = s.gw/2.0 + radius * std::cos(angle);
+                double by = s.gh/2.0 + radius * std::sin(angle);
+                spawn_blackhole(bx, by, blackholes_moving);
+            }
+        }
+    }
+    
+    // Three enemies mode affects collision logic, not objects
+    // The actual horizontal paddle logic is handled in update()
+}
+
 
