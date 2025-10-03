@@ -1733,7 +1733,7 @@ void SoftRenderer::render(const GameState &gs) {
         prim.bmax = blackholeCenters[i] + Vec3{blackholeRs[i], blackholeRs[i], blackholeRs[i]};
         prim.objType = 3;  // black hole
         prim.objIndex = (int)i;
-        prim.mat = 0;  // diffuse, non-emissive
+        prim.mat = 3;  // special black hole material with gravitational lensing
         prim.objId = 400 + (int)i;  // Use 400+ range for black holes
         bvhPrimitives.push_back(prim);
     }
@@ -2754,6 +2754,36 @@ void SoftRenderer::render(const GameState &gs) {
                                                 col = fma_add(col, throughput * direct, 1.0f);
                                                 bounce = 1;
                                             }
+                                        } else if (best.mat == 3) {
+                                            // Black hole: gravitational lensing (8-wide path)
+                                            int bhIdx = best.objId - 400;
+                                            if (bhIdx >= 0 && bhIdx < (int)blackholeCenters.size()) {
+                                                Vec3 bhCenter = blackholeCenters[bhIdx];
+                                                float bhRadius = blackholeRs[bhIdx];
+                                                Vec3 toCenter = bhCenter - best.pos;
+                                                float dist = length(toCenter);
+                                                Vec3 dirToCenter = toCenter * (1.0f / dist);
+                                                float normDist = 1.0f - (dist / bhRadius);
+                                                normDist = std::max(0.0f, std::min(1.0f, normDist));
+                                                if (normDist > 0.7f) {
+                                                    terminated = true;
+                                                    bounce = config.maxBounces;
+                                                } else {
+                                                    if (normDist < 0.4f) {
+                                                        float glowIntensity = (0.4f - normDist) * 8.0f;
+                                                        col = fma_add(col, throughput * Vec3{2.5f, 1.2f, 0.3f} * glowIntensity, 1.0f);
+                                                    }
+                                                    float bendStrength = normDist * normDist * 2.5f;
+                                                    rd = norm(rd + dirToCenter * bendStrength);
+                                                    ro = best.pos - best.n * 0.002f;
+                                                    float absorption = 0.3f + normDist * 0.5f;
+                                                    throughput = throughput * (1.0f - absorption);
+                                                    bounce = 1;
+                                                }
+                                            } else {
+                                                terminated = true;
+                                                bounce = config.maxBounces;
+                                            }
                                         }
                                     }
                                     
@@ -3099,6 +3129,36 @@ void SoftRenderer::render(const GameState &gs) {
                                                 Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;
                                                 col = fma_add(col, throughput * direct, 1.0f);
                                                 bounce = 1;
+                                            }
+                                        } else if (best.mat == 3) {
+                                            // Black hole: gravitational lensing (4-wide path)
+                                            int bhIdx = best.objId - 400;
+                                            if (bhIdx >= 0 && bhIdx < (int)blackholeCenters.size()) {
+                                                Vec3 bhCenter = blackholeCenters[bhIdx];
+                                                float bhRadius = blackholeRs[bhIdx];
+                                                Vec3 toCenter = bhCenter - best.pos;
+                                                float dist = length(toCenter);
+                                                Vec3 dirToCenter = toCenter * (1.0f / dist);
+                                                float normDist = 1.0f - (dist / bhRadius);
+                                                normDist = std::max(0.0f, std::min(1.0f, normDist));
+                                                if (normDist > 0.7f) {
+                                                    terminated = true;
+                                                    bounce = config.maxBounces;
+                                                } else {
+                                                    if (normDist < 0.4f) {
+                                                        float glowIntensity = (0.4f - normDist) * 8.0f;
+                                                        col = fma_add(col, throughput * Vec3{2.5f, 1.2f, 0.3f} * glowIntensity, 1.0f);
+                                                    }
+                                                    float bendStrength = normDist * normDist * 2.5f;
+                                                    rd = norm(rd + dirToCenter * bendStrength);
+                                                    ro = best.pos - best.n * 0.002f;
+                                                    float absorption = 0.3f + normDist * 0.5f;
+                                                    throughput = throughput * (1.0f - absorption);
+                                                    bounce = 1;
+                                                }
+                                            } else {
+                                                terminated = true;
+                                                bounce = config.maxBounces;
                                             }
                                         }
                                     }
@@ -3593,6 +3653,55 @@ void SoftRenderer::render(const GameState &gs) {
                                 throughput=throughput*(Vec3{0.86f,0.88f,0.94f}*0.5f + materials.paddleColor*0.5f);  // Phase 6: Pre-computed
                                 Vec3 direct = sampleDirect(best.pos, n, rd, seed, true) * materials.paddleColor;  // Phase 6: Pre-computed
                                 col = fma_add(col, throughput * direct, 1.0f);  // Phase 4: FMA 
+                            }
+                            else if (best.mat==3) {
+                                // Black hole: gravitational lensing effect
+                                // Get black hole center from objId
+                                int bhIdx = best.objId - 400;
+                                if (bhIdx >= 0 && bhIdx < (int)blackholeCenters.size()) {
+                                    Vec3 bhCenter = blackholeCenters[bhIdx];
+                                    float bhRadius = blackholeRs[bhIdx];
+                                    
+                                    // Calculate distance from hit point to black hole center
+                                    Vec3 toCenter = bhCenter - best.pos;
+                                    float dist = length(toCenter);
+                                    Vec3 dirToCenter = toCenter * (1.0f / dist);
+                                    
+                                    // Normalized distance (0 at edge, 1 at center)
+                                    float normDist = 1.0f - (dist / bhRadius);
+                                    normDist = std::max(0.0f, std::min(1.0f, normDist));
+                                    
+                                    // Event horizon: pure absorption at center
+                                    if (normDist > 0.7f) {
+                                        // Deep in event horizon - complete absorption
+                                        col = col + throughput * Vec3{0.0f, 0.0f, 0.0f};
+                                        terminated = true;
+                                        break;
+                                    }
+                                    
+                                    // Accretion disk glow (orange/red) at the edge
+                                    if (normDist < 0.4f) {
+                                        float glowIntensity = (0.4f - normDist) * 8.0f;
+                                        Vec3 accretionGlow = Vec3{2.5f, 1.2f, 0.3f} * glowIntensity;
+                                        col = fma_add(col, throughput * accretionGlow, 1.0f);
+                                    }
+                                    
+                                    // Gravitational lensing: bend ray toward center
+                                    float bendStrength = normDist * normDist * 2.5f; // Quadratic falloff
+                                    Vec3 bentDir = norm(rd + dirToCenter * bendStrength);
+                                    
+                                    // Offset ray origin slightly away from surface
+                                    ro = best.pos - best.n * 0.002f; // Move slightly inside
+                                    rd = bentDir;
+                                    
+                                    // Reduce throughput (light being absorbed/redshifted)
+                                    float absorption = 0.3f + normDist * 0.5f;
+                                    throughput = throughput * (1.0f - absorption);
+                                } else {
+                                    // Fallback if objId is invalid
+                                    terminated = true;
+                                    break;
+                                }
                             }
                             // Phase 6: Smarter Russian Roulette with BRDF-weighted probability
                             if (best.mat==0 || best.mat==2) { 
