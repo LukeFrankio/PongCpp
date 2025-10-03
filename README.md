@@ -1,5 +1,7 @@
 # PongCpp
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/LukeFrankio/PongCpp)
+
 Modern, extensible C++ Pong with dual frontends (console + Windows GUI), multiple game modes (including combined Obstacles + MultiBall), an experimental CPU path tracer, configurable physics (arcade vs physically-based), AI vs AI simulation, recording system, and persistent settings/high scores – all with zero external runtime dependencies.
 
 ## Highlights
