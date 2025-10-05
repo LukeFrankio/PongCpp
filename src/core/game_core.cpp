@@ -76,11 +76,89 @@ void GameCore::update(double dt) {
         remaining -= step;
         // Update obstacles (Obstacles mode)
         if (s.mode == GameMode::Obstacles || s.mode == GameMode::ObstaclesMulti) {
+            // Apply black hole gravity to obstacles if enabled
+            if (config_obstacles_gravity) {
+                for (auto &ob : s.obstacles) {
+                    for (const auto &bh : s.blackholes) {
+                        double fx, fy;
+                        bh.calculateForce(ob.x, ob.y, fx, fy);
+                        // Apply weak force (10% of ball force) as acceleration
+                        ob.vx += fx * step * 0.1;
+                        ob.vy += fy * step * 0.1;
+                    }
+                }
+            }
+            
+            // Update obstacle positions
             for (auto &ob : s.obstacles) {
                 ob.x += ob.vx * step;
                 ob.y += ob.vy * step;
                 if (ob.x - ob.w/2 < 5 || ob.x + ob.w/2 > s.gw-5) ob.vx = -ob.vx;
                 if (ob.y - ob.h/2 < 1 || ob.y + ob.h/2 > s.gh-1) ob.vy = -ob.vy;
+            }
+            
+            // Obstacle-obstacle collision detection and response
+            for (size_t i = 0; i < s.obstacles.size(); ++i) {
+                for (size_t j = i + 1; j < s.obstacles.size(); ++j) {
+                    Obstacle &ob1 = s.obstacles[i];
+                    Obstacle &ob2 = s.obstacles[j];
+                    
+                    // AABB overlap test
+                    double left1 = ob1.x - ob1.w/2.0;
+                    double right1 = ob1.x + ob1.w/2.0;
+                    double top1 = ob1.y - ob1.h/2.0;
+                    double bottom1 = ob1.y + ob1.h/2.0;
+                    
+                    double left2 = ob2.x - ob2.w/2.0;
+                    double right2 = ob2.x + ob2.w/2.0;
+                    double top2 = ob2.y - ob2.h/2.0;
+                    double bottom2 = ob2.y + ob2.h/2.0;
+                    
+                    bool overlap_x = (left1 < right2) && (right1 > left2);
+                    bool overlap_y = (top1 < bottom2) && (bottom1 > top2);
+                    
+                    if (overlap_x && overlap_y) {
+                        // Calculate penetration depths on each axis
+                        double pen_left = right1 - left2;
+                        double pen_right = right2 - left1;
+                        double pen_top = bottom1 - top2;
+                        double pen_bottom = bottom2 - top1;
+                        
+                        double pen_x = std::min(pen_left, pen_right);
+                        double pen_y = std::min(pen_top, pen_bottom);
+                        
+                        // Resolve along axis of minimum penetration
+                        if (pen_x < pen_y) {
+                            // Separate horizontally
+                            double sep = pen_x / 2.0 + 0.01;
+                            if (pen_left < pen_right) {
+                                ob1.x -= sep;
+                                ob2.x += sep;
+                            } else {
+                                ob1.x += sep;
+                                ob2.x -= sep;
+                            }
+                            // Elastic collision: exchange velocities
+                            double temp_vx = ob1.vx;
+                            ob1.vx = ob2.vx;
+                            ob2.vx = temp_vx;
+                        } else {
+                            // Separate vertically
+                            double sep = pen_y / 2.0 + 0.01;
+                            if (pen_top < pen_bottom) {
+                                ob1.y -= sep;
+                                ob2.y += sep;
+                            } else {
+                                ob1.y += sep;
+                                ob2.y -= sep;
+                            }
+                            // Elastic collision: exchange velocities
+                            double temp_vy = ob1.vy;
+                            ob1.vy = ob2.vy;
+                            ob2.vy = temp_vy;
+                        }
+                    }
+                }
             }
         }
         
@@ -104,6 +182,49 @@ void GameCore::update(double dt) {
             
             b.x += b.vx * step;
             b.y += b.vy * step;
+            
+            // Check for black hole contact/destruction if enabled
+            if (config_blackholes_destroy_balls && !s.blackholes.empty()) {
+                for (const auto &bh : s.blackholes) {
+                    double dx = b.x - bh.x;
+                    double dy = b.y - bh.y;
+                    double dist = std::sqrt(dx*dx + dy*dy);
+                    
+                    // Check if ball touches event horizon (radius of black hole)
+                    if (dist < bh.radius) {
+                        // Calculate distance from last reset to check if immediately sucked in again
+                        double reset_dx = bh.x - b.last_reset_x;
+                        double reset_dy = bh.y - b.last_reset_y;
+                        double reset_dist = std::sqrt(reset_dx*reset_dx + reset_dy*reset_dy);
+                        
+                        // If last reset was at/near center and we're being sucked in again
+                        // reset to side of center instead
+                        if (reset_dist < 3.0) {
+                            // Reset to side (offset from center)
+                            b.x = s.gw/2.0 + 10.0;
+                            b.y = s.gh/2.0;
+                            b.last_reset_x = b.x;
+                            b.last_reset_y = b.y;
+                        } else {
+                            // First reset or far enough from last - reset to center
+                            b.x = s.gw/2.0;
+                            b.y = s.gh/2.0;
+                            b.last_reset_x = b.x;
+                            b.last_reset_y = b.y;
+                        }
+                        
+                        // Reset velocity to reasonable initial state
+                        double speed = 25.0;
+                        double angle = (bi * 0.7 + 0.3) * 3.14159; // Different angle per ball
+                        b.vx = speed * std::cos(angle);
+                        b.vy = speed * std::sin(angle);
+                        
+                        // No points awarded for black hole destruction
+                        break; // Only process first black hole hit
+                    }
+                }
+            }
+            
             if (s.mode != GameMode::ThreeEnemies) {
                 if (b.y < 0) { b.y = 0; b.vy = -b.vy; }
                 if (b.y > s.gh-1) { b.y = s.gh-1; b.vy = -b.vy; }
@@ -558,7 +679,12 @@ void GameCore::spawn_blackhole(double x, double y, bool moving) {
 
 void GameCore::apply_mode_config(bool multiball, bool obstacles, bool obstacles_moving,
                                 bool blackholes, bool blackholes_moving, int blackhole_count,
-                                int multiball_count, bool three_enemies) {
+                                int multiball_count, bool three_enemies,
+                                bool obstacles_gravity, bool blackholes_destroy_balls) {
+    // Store config flags for use in update loop
+    config_obstacles_gravity = obstacles_gravity;
+    config_blackholes_destroy_balls = blackholes_destroy_balls;
+    
     // Set mode enum based on combination of flags (for legacy compatibility)
     if (obstacles && multiball) {
         s.mode = GameMode::ObstaclesMulti;

@@ -21,6 +21,8 @@ struct GameModeConfig {
     bool blackholes = false;          ///< Enable black holes
     bool blackholes_moving = false;   ///< Make black holes move
     bool three_enemies = false;       ///< Enable horizontal paddles (ThreeEnemies mode)
+    bool obstacles_gravity = false;   ///< Obstacles affected by black hole gravity
+    bool blackholes_destroy_balls = true; ///< Black holes destroy/reset balls
     int blackhole_count = 1;          ///< Number of black holes (1-5)
     int multiball_count = 3;          ///< Number of balls in multiball mode (2-5)
     

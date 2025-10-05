@@ -148,6 +148,10 @@ GameModeSettingsView::Action GameModeSettingsView::frame(HDC memDC,
         drawToggle(L"  Moving Obstacles", config_->obstacles_moving, currentY, sel_ == idxObstaclesMoving_());
         addItemRect(idxObstaclesMoving_(), currentY, false);
         currentY += rowH;
+        
+        drawToggle(L"  Gravity from Black Holes", config_->obstacles_gravity, currentY, sel_ == idxObstaclesGravity_());
+        addItemRect(idxObstaclesGravity_(), currentY, false);
+        currentY += rowH;
     }
     
     drawToggle(L"Black Holes", config_->blackholes, currentY, sel_ == idxBlackholes_());
@@ -161,6 +165,10 @@ GameModeSettingsView::Action GameModeSettingsView::frame(HDC memDC,
         
         drawSlider(L"  Black Hole Count", config_->blackhole_count, 1, 5, currentY, sel_ == idxBlackholeCount_());
         addItemRect(idxBlackholeCount_(), currentY, true);
+        currentY += rowH;
+        
+        drawToggle(L"  Destroy Balls on Contact", config_->blackholes_destroy_balls, currentY, sel_ == idxBlackholesDestroyBalls_());
+        addItemRect(idxBlackholesDestroyBalls_(), currentY, false);
         currentY += rowH;
     }
     
@@ -198,6 +206,10 @@ GameModeSettingsView::Action GameModeSettingsView::frame(HDC memDC,
         config_->obstacles_moving = !config_->obstacles_moving;
         changed = true;
     }
+    else if (sel_ == idxObstaclesGravity_() && config_->obstacles && input.just_pressed(VK_SPACE)) {
+        config_->obstacles_gravity = !config_->obstacles_gravity;
+        changed = true;
+    }
     else if (sel_ == idxBlackholes_() && input.just_pressed(VK_SPACE)) {
         config_->blackholes = !config_->blackholes;
         changed = true;
@@ -215,6 +227,10 @@ GameModeSettingsView::Action GameModeSettingsView::frame(HDC memDC,
             config_->blackhole_count++;
             changed = true;
         }
+    }
+    else if (sel_ == idxBlackholesDestroyBalls_() && config_->blackholes && input.just_pressed(VK_SPACE)) {
+        config_->blackholes_destroy_balls = !config_->blackholes_destroy_balls;
+        changed = true;
     }
     else if (sel_ == idxThreeEnemies_() && input.just_pressed(VK_SPACE)) {
         config_->three_enemies = !config_->three_enemies;
@@ -285,12 +301,20 @@ GameModeSettingsView::Action GameModeSettingsView::frame(HDC memDC,
                         config_->obstacles_moving = !config_->obstacles_moving;
                         changed = true;
                     }
+                    else if (item.idx == idxObstaclesGravity_()) {
+                        config_->obstacles_gravity = !config_->obstacles_gravity;
+                        changed = true;
+                    }
                     else if (item.idx == idxBlackholes_()) {
                         config_->blackholes = !config_->blackholes;
                         changed = true;
                     }
                     else if (item.idx == idxBlackholesMoving_()) {
                         config_->blackholes_moving = !config_->blackholes_moving;
+                        changed = true;
+                    }
+                    else if (item.idx == idxBlackholesDestroyBalls_()) {
+                        config_->blackholes_destroy_balls = !config_->blackholes_destroy_balls;
                         changed = true;
                     }
                     else if (item.idx == idxThreeEnemies_()) {

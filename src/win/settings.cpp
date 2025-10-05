@@ -54,6 +54,8 @@ Settings SettingsManager::load(const std::wstring &path) {
     extractInt("gm_blackholes_moving", temp_int); s.mode_config.blackholes_moving = (temp_int != 0);
     extractInt("gm_blackhole_count", s.mode_config.blackhole_count);
     extractInt("gm_three_enemies", temp_int); s.mode_config.three_enemies = (temp_int != 0);
+    extractInt("gm_obstacles_gravity", temp_int); s.mode_config.obstacles_gravity = (temp_int != 0);
+    extractInt("gm_blackholes_destroy_balls", temp_int); s.mode_config.blackholes_destroy_balls = (temp_int != 0);
     
     // Validate game mode config
     if(s.mode_config.multiball_count < 2) s.mode_config.multiball_count = 2;
@@ -135,6 +137,8 @@ bool SettingsManager::save(const std::wstring &path, const Settings &s) {
     ofs << "  \"gm_blackholes_moving\": " << (s.mode_config.blackholes_moving ? 1 : 0) << ",\n";
     ofs << "  \"gm_blackhole_count\": " << s.mode_config.blackhole_count << ",\n";
     ofs << "  \"gm_three_enemies\": " << (s.mode_config.three_enemies ? 1 : 0) << ",\n";
+    ofs << "  \"gm_obstacles_gravity\": " << (s.mode_config.obstacles_gravity ? 1 : 0) << ",\n";
+    ofs << "  \"gm_blackholes_destroy_balls\": " << (s.mode_config.blackholes_destroy_balls ? 1 : 0) << ",\n";
     
     ofs << "  \"pt_rays_per_frame\": " << s.pt_rays_per_frame << ",\n";
     ofs << "  \"pt_max_bounces\": " << s.pt_max_bounces << ",\n";

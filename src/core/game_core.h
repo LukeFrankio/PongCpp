@@ -48,6 +48,8 @@ struct BallState {
     double y = 0.0;
     double vx = 0.0;
     double vy = 0.0;
+    double last_reset_x = 0.0;  ///< Last X position where ball was reset (for black hole logic)
+    double last_reset_y = 0.0;  ///< Last Y position where ball was reset (for black hole logic)
 };
 
 /**
@@ -197,7 +199,8 @@ public:
      */
     void apply_mode_config(bool multiball, bool obstacles, bool obstacles_moving,
                           bool blackholes, bool blackholes_moving, int blackhole_count,
-                          int multiball_count, bool three_enemies);
+                          int multiball_count, bool three_enemies,
+                          bool obstacles_gravity, bool blackholes_destroy_balls);
 
     /**
      * @brief Spawn an extra ball (used in MultiBall mode)
@@ -236,6 +239,12 @@ private:
     bool right_ai_enabled = true;   ///< When true, right paddle is AI-controlled
     bool physical_mode = true;      ///< Use physically-based bounce (true) or legacy arcade (false)
     bool speed_mode = false;        ///< "I am Speed" mode: no max speed, auto-acceleration if stalling
+    
+    /// @name Game Mode Configuration Flags
+    /// @{
+    bool config_obstacles_gravity = false;        ///< Obstacles affected by black hole gravity
+    bool config_blackholes_destroy_balls = true;  ///< Black holes destroy/reset balls
+    /// @}
     
     /// @name Speed Mode State Tracking
     /// @{

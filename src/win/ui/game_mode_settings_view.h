@@ -77,11 +77,13 @@ private:
     int idxMultiballCount_() const { return 1; }
     int idxObstacles_() const { return 2; }
     int idxObstaclesMoving_() const { return 3; }
-    int idxBlackholes_() const { return 4; }
-    int idxBlackholesMoving_() const { return 5; }
-    int idxBlackholeCount_() const { return 6; }
-    int idxThreeEnemies_() const { return 7; }
-    int totalItems_() const { return 8; }
+    int idxObstaclesGravity_() const { return 4; }
+    int idxBlackholes_() const { return 5; }
+    int idxBlackholesMoving_() const { return 6; }
+    int idxBlackholeCount_() const { return 7; }
+    int idxBlackholesDestroyBalls_() const { return 8; }
+    int idxThreeEnemies_() const { return 9; }
+    int totalItems_() const { return 10; }
     
     void clampSel();
 };

@@ -190,7 +190,9 @@ int run_win_pong(HINSTANCE inst, int show) {
                             settings.mode_config.blackholes_moving,
                             settings.mode_config.blackhole_count,
                             settings.mode_config.multiball_count,
-                            settings.mode_config.three_enemies
+                            settings.mode_config.three_enemies,
+                            settings.mode_config.obstacles_gravity,
+                            settings.mode_config.blackholes_destroy_balls
                         );
                         // Transition to gameplay: clear backbuffer and reset PT history so menu isn't blended over
                         st.ui_mode=0; 
