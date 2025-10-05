@@ -2522,6 +2522,7 @@ void SoftRenderer::render(const GameState &gs) {
         std::atomic<int> pathsTraced{0};
         std::atomic<int> earlyExitAccum{0};
         std::atomic<int> rouletteAccum{0};
+        std::atomic<bool> usedPacket4{false};
 
         // Phase 5: Tile-based rendering for better cache coherency
         auto worker = [&](int yStart, int yEnd){
@@ -2913,53 +2914,77 @@ void SoftRenderer::render(const GameState &gs) {
                             }
                         }
 #endif
-                        if (config.usePacketTracing && spp == 1) {
-                            // 4-wide SSE path (fallback or when AVX2 not available)
+                        if (config.usePacketTracing) {
+                            // 4-wide SSE path with arbitrary spp support
+                            // Process 4 pixels at a time, doing all spp samples for each pixel
                             for (; x + 3 < tileXEnd; x += 4) {
-                                // Initialize 4 primary rays (one per pixel)
-                                RayPacket4 packet;
-                                Vec3 ro4[4], rd4[4];
-                                uint32_t seeds[4];
+                                // Per-pixel accumulators for all samples
+                                Vec3 pixelAccum[4] = {{0,0,0}, {0,0,0}, {0,0,0}, {0,0,0}};
                                 
-                                for (int i = 0; i < 4; ++i) {
-                                    int px = x + i;
-                                    seeds[i] = (px*1973) ^ (y*9277) ^ (frameCounter*26699u);
-                                    float u1, u2;
+                                // Process all samples for these 4 pixels
+                                for (int s = 0; s < spp; ++s) {
+                                    // Initialize 4 primary rays (one per pixel, same sample index)
+                                    RayPacket4 packet;
+                                    Vec3 ro4[4], rd4[4];
+                                    uint32_t seeds[4];
                                     
-                                    // Use same sampling strategy as scalar path
-                                    if (config.useBlueNoise) {
-                                        u1 = sampleBlueNoise(px, y, frameCounter);
-                                        u2 = sampleBlueNoise(px + 32, y + 32, frameCounter);
-                                    } else {
-                                        rng2(seeds[i], u1, u2);
+                                    for (int i = 0; i < 4; ++i) {
+                                        int px = x + i;
+                                        // Unique seed per pixel, frame, and sample
+                                        seeds[i] = (px*1973) ^ (y*9277) ^ (frameCounter*26699u) ^ (s*6151u);
+                                        float u1, u2;
+                                        
+                                        // Use same sampling strategy as scalar path
+                                        int globalSample = frameCounter * spp + s;
+                                        if (config.useHaltonSeq) {
+                                            int sampleIndex = globalSample & 0x3FFF;
+                                            u1 = haltonBase2(sampleIndex);
+                                            u2 = haltonBase3(sampleIndex);
+                                        } else if (config.useBlueNoise) {
+                                            u1 = sampleBlueNoise(px, y, globalSample);
+                                            u2 = sampleBlueNoise(px + 32, y + 32, globalSample);
+                                        } else if (config.useStratified) {
+                                            int sqrtSpp = (int)sqrt_fast((float)spp);
+                                            if (sqrtSpp * sqrtSpp >= spp && sqrtSpp > 1) {
+                                                int sx = s % sqrtSpp;
+                                                int sy = s / sqrtSpp;
+                                                float jx, jy;
+                                                rng2(seeds[i], jx, jy);
+                                                u1 = ((float)sx + jx) / (float)sqrtSpp;
+                                                u2 = ((float)sy + jy) / (float)sqrtSpp;
+                                            } else {
+                                                rng2(seeds[i], u1, u2);
+                                            }
+                                        } else {
+                                            rng2(seeds[i], u1, u2);
+                                        }
+                                        
+                                        float rx = (px + u1) * invRTW;
+                                        float ry = (y + u2) * invRTH;
+                                        
+                                        if (config.useOrtho) {
+                                            float jx, jy;
+                                            rng2(seeds[i], jx, jy);
+                                            float wx = ((px + jx) * invRTW - 0.5f) * 4.0f;
+                                            float wy = (((rtH-1-y) + jy) * invRTH - 0.5f) * 3.0f;
+                                            ro4[i] = {wx, wy, -1.0f};
+                                            rd4[i] = {0, 0, 1};
+                                        } else {
+                                            float px_cam = (2*rx - 1) * tanF * aspect;
+                                            float py_cam = (1 - 2*ry) * tanF;
+                                            rd4[i] = norm(Vec3{px_cam, py_cam, 1});
+                                            ro4[i] = camPos;
+                                        }
                                     }
                                     
-                                    float rx = (px + u1) * invRTW;
-                                    float ry = (y + u2) * invRTH;
-                                    
-                                    if (config.useOrtho) {
-                                        float jx, jy;
-                                        rng2(seeds[i], jx, jy);
-                                        float wx = ((px + jx) * invRTW - 0.5f) * 4.0f;
-                                        float wy = (((rtH-1-y) + jy) * invRTH - 0.5f) * 3.0f;
-                                        ro4[i] = {wx, wy, -1.0f};
-                                        rd4[i] = {0, 0, 1};
-                                    } else {
-                                        float px_cam = (2*rx - 1) * tanF * aspect;
-                                        float py_cam = (1 - 2*ry) * tanF;
-                                        rd4[i] = norm(Vec3{px_cam, py_cam, 1});
-                                        ro4[i] = camPos;
-                                    }
-                                }
-                                
-                                // Load rays into SIMD packet
-                                packet.ox = _mm_set_ps(ro4[3].x, ro4[2].x, ro4[1].x, ro4[0].x);
-                                packet.oy = _mm_set_ps(ro4[3].y, ro4[2].y, ro4[1].y, ro4[0].y);
-                                packet.oz = _mm_set_ps(ro4[3].z, ro4[2].z, ro4[1].z, ro4[0].z);
-                                packet.dx = _mm_set_ps(rd4[3].x, rd4[2].x, rd4[1].x, rd4[0].x);
-                                packet.dy = _mm_set_ps(rd4[3].y, rd4[2].y, rd4[1].y, rd4[0].y);
-                                packet.dz = _mm_set_ps(rd4[3].z, rd4[2].z, rd4[1].z, rd4[0].z);
-                                packet.mask = _mm_castsi128_ps(_mm_set1_epi32(-1));  // All active
+                                    // Load rays into SIMD packet
+                                    packet.ox = _mm_set_ps(ro4[3].x, ro4[2].x, ro4[1].x, ro4[0].x);
+                                    packet.oy = _mm_set_ps(ro4[3].y, ro4[2].y, ro4[1].y, ro4[0].y);
+                                    packet.oz = _mm_set_ps(ro4[3].z, ro4[2].z, ro4[1].z, ro4[0].z);
+                                    packet.dx = _mm_set_ps(rd4[3].x, rd4[2].x, rd4[1].x, rd4[0].x);
+                                    packet.dy = _mm_set_ps(rd4[3].y, rd4[2].y, rd4[1].y, rd4[0].y);
+                                    packet.dz = _mm_set_ps(rd4[3].z, rd4[2].z, rd4[1].z, rd4[0].z);
+                                    packet.mask = _mm_castsi128_ps(_mm_set1_epi32(-1));  // All active
                                 
                                 // Initialize hit records
                                 Hit4 hit4;
@@ -3044,21 +3069,21 @@ void SoftRenderer::render(const GameState &gs) {
                                 _mm_store_si128((__m128i*)mat_out, hit4.mat);
                                 _mm_store_ps(valid_out, hit4.valid);
                                 
-                                // Process each ray result
-                                for (int i = 0; i < 4; ++i) {
-                                    int px = x + i;
-                                    Vec3 col{0, 0, 0};
-                                    uint32_t seed = seeds[i];
-                                    Vec3 ro = ro4[i];
-                                    Vec3 rd = rd4[i];
-                                    Vec3 throughput{1, 1, 1};
-                                    bool terminated = false;
-                                    int bounce = 0;
-                                    
-                                    // Check if primary ray hit anything (from packet trace)
-                                    uint32_t valid_bits;
-                                    std::memcpy(&valid_bits, &valid_out[i], sizeof(uint32_t));
-                                    bool hit_primary = (valid_bits != 0);
+                                    // Process each ray result and accumulate
+                                    for (int i = 0; i < 4; ++i) {
+                                        int px = x + i;
+                                        Vec3 col{0, 0, 0};
+                                        uint32_t seed = seeds[i];
+                                        Vec3 ro = ro4[i];
+                                        Vec3 rd = rd4[i];
+                                        Vec3 throughput{1, 1, 1};
+                                        bool terminated = false;
+                                        int bounce = 0;
+                                        
+                                        // Check if primary ray hit anything (from packet trace)
+                                        uint32_t valid_bits;
+                                        std::memcpy(&valid_bits, &valid_out[i], sizeof(uint32_t));
+                                        bool hit_primary = (valid_bits != 0);
                                     
                                     if (!hit_primary) {
                                         // Background
@@ -3307,17 +3332,31 @@ void SoftRenderer::render(const GameState &gs) {
                                         Vec3 amb{0.05f, 0.055f, 0.06f};
                                         col = fma_add(col, throughput * amb, 1.0f);
                                     }
-                                    
-                                    totalBounces.fetch_add(bounce, std::memory_order_relaxed);
-                                    pathsTraced++;
-                                    
-                                    // Write result
+                                        
+                                        totalBounces.fetch_add(bounce, std::memory_order_relaxed);
+                                        pathsTraced++;
+                                        
+                                        // Accumulate this sample to pixel accumulator
+                                        pixelAccum[i] = pixelAccum[i] + col;
+                                    }
+                                }  // end sample loop
+                                
+                                // Write final accumulated results (average of all samples)
+                                float invSpp = 1.0f / (float)spp;
+                                for (int i = 0; i < 4; ++i) {
+                                    int px = x + i;
                                     size_t idx = (size_t)(y * rtW + px);
-                                    hdrR_ref[idx] = col.x;
-                                    hdrG_ref[idx] = col.y;
-                                    hdrB_ref[idx] = col.z;
+                                    Vec3 finalColor = pixelAccum[i] * invSpp;
+                                    hdrR_ref[idx] = finalColor.x;
+                                    hdrG_ref[idx] = finalColor.y;
+                                    hdrB_ref[idx] = finalColor.z;
                                 }
                             }  // end 4-pixel packet loop
+                            
+                            // Mark that we used 4-wide SIMD (if we actually processed any packets)
+                            if (x > tileX) {
+                                usedPacket4.store(true, std::memory_order_relaxed);
+                            }
                         }  // end if (usePacketTracing)
                         
                         // Fallback to scalar processing for remaining pixels (after packet processing) or all pixels when packet tracing disabled
@@ -3780,12 +3819,8 @@ void SoftRenderer::render(const GameState &gs) {
         stats_.spp = spp; stats_.totalRays = spp * rtW * rtH;
         
         // Track packet tracing mode
-        if (config.usePacketTracing && spp == 1) {
-#if COMPILE_AVX_SUPPORT
-            stats_.packetMode = (g_cpuFeatures.avx2 && !config.force4WideSIMD) ? 8 : 4;
-#else
+        if (usedPacket4) {
             stats_.packetMode = 4;
-#endif
         } else {
             stats_.packetMode = 0;
         }
