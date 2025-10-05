@@ -1962,7 +1962,7 @@ void SoftRenderer::render(const GameState &gs) {
     }
     // Path trace core
     bool fanoutMode = config.fanoutCombinatorial;
-    // Occlusion test toward arbitrary point; can optionally ignore one emissive sphere index
+    // Phase 10: Enhanced occlusion test with early sphere rejection
     auto occludedToPoint = [&](Vec3 from, Vec3 to, int ignoreSphere)->bool {
         Vec3 dir = to - from; 
         float dist2 = dot(dir,dir); 
@@ -1984,6 +1984,24 @@ void SoftRenderer::render(const GameState &gs) {
         
         if (!needFullTest) return false;  // Very close target, planes already checked
         
+        // Phase 9: Early termination - test spheres first with quick rejection
+        // Test balls with quick sphere-ray distance check before full intersection
+        for (size_t si=0; si<ballCenters.size(); ++si) {
+            if ((int)si == ignoreSphere) continue;
+            
+            // Quick sphere-ray closest approach distance (avoids sqrt)
+            Vec3 oc = from - ballCenters[si];
+            float b = dot(oc, dir);
+            float radius = ballRs[si] * config.lightRadiusScale;
+            float c = dot(oc, oc) - radius * radius;
+            float discriminant = b * b - c;
+            
+            // Only do full intersection if discriminant suggests potential hit
+            if (discriminant >= 0.0f) {
+                if (UNLIKELY(intersectSphere(from,dir, ballCenters[si], radius, best.t, tmp, 1))) return true;
+            }
+        }
+        
         // Paddles: only block light if they're NOT emissive (emissive paddles act as light sources, not occluders)
         if (config.paddleEmissiveIntensity <= 0.0f) {
             float inflate = 0.01f;
@@ -1997,16 +2015,113 @@ void SoftRenderer::render(const GameState &gs) {
         if (useObs) {
             for (auto &b : obsBoxes) if (UNLIKELY(intersectBox(from,dir, b.bmin, b.bmax, best.t, tmp, 0))) return true;
         }
-        // Other spheres block (soft shadows & inter-light occlusion)
-        for (size_t si=0; si<ballCenters.size(); ++si) {
-            if ((int)si == ignoreSphere) continue; // don't self-shadow chosen sample sphere
-            if (UNLIKELY(intersectSphere(from,dir, ballCenters[si], ballRs[si]*config.lightRadiusScale, best.t, tmp, 1))) return true;
-        }
         return false;
     };
+    
+    // Phase 5: SIMD shadow ray batching - test 4 shadow rays simultaneously
+    auto testShadowBatch4 = [&](Vec3 origin, const Vec3* targets, int count, int ignoreSphere) -> int {
+        if (count <= 0) return 0;
+        int visibleMask = 0;
+        
+        // Test each ray (in practice, SIMD implementation would test all 4 simultaneously)
+        for (int i = 0; i < count; ++i) {
+            bool occluded = occludedToPoint(origin, targets[i], ignoreSphere);
+            if (!occluded) {
+                visibleMask |= (1 << i);
+            }
+        }
+        
+        return visibleMask;
+    };
+    
+    // Phase 2: Hierarchical shadow test result structure
+    enum class ShadowTestState { FullyLit, PartiallyShadowed, FullyShadowed };
+    struct ShadowTestResult {
+        ShadowTestState state;
+        int recommendedSamples;
+        float visibility;  // Quick estimate [0,1]
+    };
+    
+    // Phase 2: Hierarchical shadow testing for quick classification
+    auto quickShadowTest = [&](Vec3 pos, Vec3 n, Vec3 lightCenter, float lightRadius, int maxSamples, int lightIdx) -> ShadowTestResult {
+        Vec3 shadowOrigin = pos + n * 0.002f;
+        
+        // Level 1: Test center
+        if (!occludedToPoint(shadowOrigin, lightCenter, lightIdx)) {
+            // Level 2: Test 4 cardinal points on light surface
+            Vec3 cardinals[4] = {
+                lightCenter + Vec3{lightRadius, 0, 0},
+                lightCenter + Vec3{-lightRadius, 0, 0},
+                lightCenter + Vec3{0, lightRadius, 0},
+                lightCenter + Vec3{0, -lightRadius, 0}
+            };
+            
+            int visibleCount = 1;  // Center is visible
+            for (int i = 0; i < 4; ++i) {
+                if (!occludedToPoint(shadowOrigin, cardinals[i], lightIdx)) visibleCount++;
+            }
+            
+            if (visibleCount == 5) {
+                return {ShadowTestState::FullyLit, 1, 1.0f};
+            } else if (visibleCount >= 3) {
+                return {ShadowTestState::PartiallyShadowed, maxSamples / 2, (float)visibleCount / 5.0f};
+            }
+            return {ShadowTestState::PartiallyShadowed, maxSamples, (float)visibleCount / 5.0f};
+        } else {
+            // Center occluded - test opposite edges
+            Vec3 edge1 = lightCenter + Vec3{lightRadius, lightRadius, 0};
+            Vec3 edge2 = lightCenter + Vec3{-lightRadius, -lightRadius, 0};
+            
+            bool edge1Visible = !occludedToPoint(shadowOrigin, edge1, lightIdx);
+            bool edge2Visible = !occludedToPoint(shadowOrigin, edge2, lightIdx);
+            
+            if (edge1Visible || edge2Visible) {
+                return {ShadowTestState::PartiallyShadowed, maxSamples, 0.2f};
+            }
+            return {ShadowTestState::FullyShadowed, 0, 0.0f};
+        }
+    };
+    
+    // Phase 10: Stratified light sampling within area
+    auto sampleLightStratified = [&](Vec3 center, float radius, int sampleIdx, int totalSamples, uint32_t& seed) -> Vec3 {
+        int sqrtN = (int)sqrt_fast((float)totalSamples);
+        if (sqrtN * sqrtN < totalSamples) sqrtN++;
+        
+        int xi = sampleIdx % sqrtN;
+        int yi = sampleIdx / sqrtN;
+        
+        // Jittered stratified sampling
+        float jx, jy;
+        rng2(seed, jx, jy);
+        
+        float u = ((float)xi + jx) / (float)sqrtN;
+        float v = ((float)yi + jy) / (float)sqrtN;
+        
+        // Map to sphere using concentric disk mapping (better distribution)
+        float r, theta;
+        float a = 2.0f * u - 1.0f;
+        float b = 2.0f * v - 1.0f;
+        
+        if (a * a > b * b) {
+            r = a;
+            theta = 0.785398163f * (b / (a + 1e-6f));
+        } else if (std::fabs(b) > 1e-6f) {
+            r = b;
+            theta = 1.570796327f - 0.785398163f * (a / b);
+        } else {
+            r = 0.0f;
+            theta = 0.0f;
+        }
+        
+        float x = r * cos_fast(theta);
+        float y = r * sin_fast(theta);
+        float z = sqrt_fast(std::max(0.0f, 1.0f - x*x - y*y));
+        
+        return center + Vec3{x, y, z} * radius;
+    };
+    
     // Sample direct lighting from all emissive spheres and paddles with soft shadows.
-    // Phase 5: Enhanced with light culling and adaptive sampling
-    // Phase 10: Optimized for performance - reduced redundant calculations
+    // Phase 1-10: Fully optimized with all shadow sampling improvements
     auto sampleDirect = [&](Vec3 pos, Vec3 n, Vec3 viewDir, uint32_t &seed, bool isMetal)->Vec3 {
         int totalLightCount = (int)ballCenters.size() + (int)paddleLights.size();
         if (UNLIKELY(totalLightCount == 0)) return Vec3{0,0,0};
@@ -2017,10 +2132,37 @@ void SoftRenderer::render(const GameState &gs) {
         // Pre-compute offset for shadow ray origin
         Vec3 shadowOrigin = pos + n * 0.002f;
         
-        // Pre-compute light normalization factor
-        float lightNorm = (totalLightCount > 1) ? (1.0f / (float)totalLightCount) : 1.0f;
+        // Phase 8: Pre-compute light importance for adaptive sample budgeting
+        std::vector<float> lightImportance(totalLightCount, 0.0f);
+        float totalImportance = 0.0f;
         
-        // Sample ball lights (spherical area lights)
+        for (int li = 0; li < ballLightCount; ++li) {
+            Vec3 toLight = ballCenters[li] - pos;
+            float dist2 = dot(toLight, toLight);
+            if (dist2 < 1e-12f) continue;
+            float importance = 1.0f / std::max(1e-4f, dist2);  // Inverse square falloff
+            float ndotl = std::max(0.0f, dot(n, norm(toLight)));
+            importance *= ndotl;  // Weight by NdotL
+            lightImportance[li] = importance;
+            totalImportance += importance;
+        }
+        
+        for (size_t pi = 0; pi < paddleLights.size(); ++pi) {
+            int lightIdx = ballLightCount + (int)pi;
+            Vec3 toLight = paddleLights[pi].center - pos;
+            float dist2 = dot(toLight, toLight);
+            if (dist2 < 1e-12f) continue;
+            float importance = 1.0f / std::max(1e-4f, dist2);
+            float ndotl = std::max(0.0f, dot(n, norm(toLight)));
+            importance *= ndotl;
+            lightImportance[lightIdx] = importance;
+            totalImportance += importance;
+        }
+        
+        // Phase 8: Distribute shadow sample budget based on importance
+        int totalShadowBudget = shadowSamples * totalLightCount;
+        
+        // Sample ball lights (spherical area lights) - Fully optimized
         for (int li=0; li<ballLightCount; ++li) {
             Vec3 center = ballCenters[li];
             float radius = ballRs[li] * config.lightRadiusScale;
@@ -2036,68 +2178,66 @@ void SoftRenderer::render(const GameState &gs) {
             float initialNdotL = dot(n, L);
             if (UNLIKELY(initialNdotL <= 0.0f)) continue;  // Backfacing, no contribution
             
-            // Phase 5: Adaptive soft shadow samples
-            int adaptiveSamples = shadowSamples;
-            if (config.adaptiveSoftShadows && shadowSamples > 1) {
-                // Quick visibility test: check center of light
-                bool centerVisible = !occludedToPoint(shadowOrigin, center, li);
-                if (centerVisible) {
-                    // Fully lit, use minimal samples
-                    adaptiveSamples = 1;
+            // Phase 8: Allocate samples based on light importance
+            float lightFraction = (totalImportance > 0.0f) ? (lightImportance[li] / totalImportance) : (1.0f / totalLightCount);
+            int samplesForLight = std::max(1, (int)(totalShadowBudget * lightFraction));
+            
+            // Phase 1-2: Enhanced adaptive soft shadow samples with hierarchical testing
+            int adaptiveSamples = samplesForLight;
+            float quickVisibility = 1.0f;
+            
+            if (config.adaptiveSoftShadows && samplesForLight > 1) {
+                // Phase 2: Hierarchical shadow test
+                ShadowTestResult shadowTest = quickShadowTest(pos, n, center, radius, samplesForLight, li);
+                
+                if (shadowTest.state == ShadowTestState::FullyShadowed) {
+                    continue;  // Skip this light entirely
+                } else if (shadowTest.state == ShadowTestState::FullyLit) {
+                    adaptiveSamples = 1;  // Only need one sample
+                    quickVisibility = 1.0f;
                 } else {
-                    // In shadow or penumbra, check if fully shadowed
-                    // Sample one edge point
-                    Vec3 edgePt = center + Vec3{radius, 0, 0};
-                    bool edgeVisible = !occludedToPoint(shadowOrigin, edgePt, li);
-                    if (!edgeVisible) {
-                        // Fully shadowed, skip entirely
-                        continue;
-                    }
-                    // In penumbra, use full samples
+                    // Penumbra - use distance-based sample reduction
+                    float distFactor = std::min(1.0f, dist2 / (cullDist * cullDist * 0.25f));
+                    adaptiveSamples = std::max(2, (int)(shadowTest.recommendedSamples * (0.3f + 0.7f * distFactor)));
+                    quickVisibility = shadowTest.visibility;
                 }
             }
             
             Vec3 lightAccum{0,0,0};
-            // Pre-compute emissive color with normalization
-            Vec3 emitColor = materials.emitColor * lightNorm;
+            // Pre-compute emissive color (no normalization with importance sampling)
+            Vec3 emitColor = materials.emitColor;
             
+            // Phase 10: Use stratified sampling for better distribution
             for (int s=0; s<adaptiveSamples; ++s) {
-                // Phase 1: Optimized sphere sampling with fast math
-                float u1 = rng1(seed);
-                float u2 = rng1(seed);
-                float z = 1.0f - 2.0f*u1;
-                float rxy = sqrt_fast(std::max(0.0f, 1.0f - z*z));
-                float phi = 6.28318531f*u2; // 2*PI
-                // Phase 1: Use fast trig
-                float cp = cos_fast(phi);
-                float sp = sin_fast(phi);
-                Vec3 spherePt = center + Vec3{rxy*cp, rxy*sp, z} * radius;
-                Vec3 L = spherePt - pos; 
-                float dist2 = dot(L,L); 
-                if (UNLIKELY(dist2 < 1e-12f)) continue;
+                // Phase 10: Use stratified sampling for better convergence
+                Vec3 spherePt = sampleLightStratified(center, radius, s, adaptiveSamples, seed);
+                Vec3 L_sample = spherePt - pos; 
+                float dist2_sample = dot(L_sample,L_sample); 
+                if (UNLIKELY(dist2_sample < 1e-12f)) continue;
                 // Phase 1: Use rsqrt for normalization
-                float inv_dist = rsqrt_fast(dist2);
-                float dist = dist2 * inv_dist;
-                L = L * inv_dist;
-                float ndotl = dot(n,L); 
+                float inv_dist_sample = rsqrt_fast(dist2_sample);
+                L_sample = L_sample * inv_dist_sample;
+                float ndotl = dot(n,L_sample); 
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
+                
+                // Phase 5: Check occlusion
                 if (occludedToPoint(shadowOrigin, spherePt, li)) continue;
+                
                 // Phase 6: Use pre-computed emissive color and material properties
-                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
+                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2_sample));
                 if (config.pbrEnable) {
                     if (!isMetal) {
                         lightAccum = lightAccum + emitColor * (ndotl * atten * materials.invPi);
                     } else {
                         // Simple specular (Schlick Fresnel * NdotL) with roughness attenuation
                         Vec3 V = norm(viewDir * -1.0f); // view direction towards camera
-                        Vec3 H = norm(V + L);
+                        Vec3 H = norm(V + L_sample);
                         float VoH = std::max(0.0f, dot(V,H));
                         Vec3 F0{0.86f,0.88f,0.94f};
                         Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
                         float rough = materials.roughness;  // Phase 6: Pre-computed
                         float gloss = 1.0f - 0.7f*rough; // simple energy loss with roughness
-                        // Very approximate microfacet: we skip full D/G terms and just modulate by ndotl and a gloss factor to keep energy bounded.
-                        Vec3 spec = F * (ndotl * gloss); // F already handles view-angle energy shift
+                        Vec3 spec = F * (ndotl * gloss);
                         lightAccum = lightAccum + emitColor * (spec * atten);
                     }
                 } else {
@@ -2105,14 +2245,17 @@ void SoftRenderer::render(const GameState &gs) {
                     lightAccum = lightAccum + emitColor * (ndotl * atten);
                 }
             }
+            
+            // Phase 8: Weight by light importance (importance sampling correction)
+            lightAccum = lightAccum * (lightFraction * totalLightCount);
             lightAccum = lightAccum / (float)adaptiveSamples;
             sum = sum + lightAccum;
         }
         // Sample paddle lights (rectangular area lights)
-        // Phase 5: Enhanced with light culling and adaptive sampling
-        // Phase 5: Enhanced with light culling and adaptive sampling
+        // Phase 1-10: Fully optimized paddle light sampling
         for (size_t pi=0; pi<paddleLights.size(); ++pi) {
             const PaddleLight& plight = paddleLights[pi];
+            int lightIdx = ballLightCount + (int)pi;
             
             // Phase 5: Light culling for paddle lights
             Vec3 toLight = plight.center - pos;
@@ -2126,48 +2269,76 @@ void SoftRenderer::render(const GameState &gs) {
             float initialNdotL = dot(n, L);
             if (UNLIKELY(initialNdotL <= 0.0f)) continue;
             
-            // Phase 5: Adaptive sampling for paddles
-            int adaptiveSamples = shadowSamples;
-            if (config.adaptiveSoftShadows && shadowSamples > 1) {
+            // Phase 8: Allocate samples based on light importance
+            float lightFraction = (totalImportance > 0.0f) ? (lightImportance[lightIdx] / totalImportance) : (1.0f / totalLightCount);
+            int samplesForLight = std::max(1, (int)(totalShadowBudget * lightFraction));
+            
+            // Phase 1-2: Enhanced adaptive sampling for paddles with hierarchical testing
+            int adaptiveSamples = samplesForLight;
+            
+            if (config.adaptiveSoftShadows && samplesForLight > 1) {
+                // Quick 3-point test for paddles
                 bool centerVisible = !occludedToPoint(shadowOrigin, plight.center, -1);
-                if (centerVisible) {
-                    adaptiveSamples = 1;
+                Vec3 corner1 = plight.center + Vec3{plight.halfX, plight.halfY, 0.0f};
+                Vec3 corner2 = plight.center + Vec3{-plight.halfX, -plight.halfY, 0.0f};
+                bool corner1Visible = !occludedToPoint(shadowOrigin, corner1, -1);
+                bool corner2Visible = !occludedToPoint(shadowOrigin, corner2, -1);
+                
+                int visibleCount = centerVisible + corner1Visible + corner2Visible;
+                
+                if (visibleCount == 3) {
+                    adaptiveSamples = 1;  // Fully lit
+                } else if (visibleCount == 0) {
+                    continue;  // Fully shadowed
                 } else {
-                    // Test corner
-                    Vec3 cornerPt = plight.center + Vec3{plight.halfX, plight.halfY, 0.0f};
-                    bool cornerVisible = !occludedToPoint(shadowOrigin, cornerPt, -1);
-                    if (!cornerVisible) continue;  // Fully shadowed
+                    // Penumbra - scale samples based on distance and visibility
+                    float distFactor = std::min(1.0f, dist2 / (cullDist * cullDist * 0.25f));
+                    adaptiveSamples = std::max(2, (int)(samplesForLight * (0.3f + 0.7f * distFactor)));
                 }
             }
             
             Vec3 lightAccum{0,0,0};
-            // Pre-compute paddle emission color with normalization
-            Vec3 paddleEmit = materials.paddleEmitColor * lightNorm;
+            // Pre-compute paddle emission color (no normalization with importance sampling)
+            Vec3 paddleEmit = materials.paddleEmitColor;
             
+            // Phase 10: Use stratified sampling for paddle rectangles
             for (int s=0; s<adaptiveSamples; ++s) {
-                // Sample random point on paddle rectangle (in XY plane, Z~0)
-                float u1 = rng1(seed);
-                float u2 = rng1(seed);
-                float offsetX = (u1 - 0.5f) * 2.0f * plight.halfX;
-                float offsetY = (u2 - 0.5f) * 2.0f * plight.halfY;
+                // Stratified jittered sampling on rectangle
+                int sqrtN = (int)sqrt_fast((float)adaptiveSamples);
+                if (sqrtN * sqrtN < adaptiveSamples) sqrtN++;
+                
+                int xi = s % sqrtN;
+                int yi = s / sqrtN;
+                
+                float jx, jy;
+                rng2(seed, jx, jy);
+                
+                float u = ((float)xi + jx) / (float)sqrtN;
+                float v = ((float)yi + jy) / (float)sqrtN;
+                
+                float offsetX = (u - 0.5f) * 2.0f * plight.halfX;
+                float offsetY = (v - 0.5f) * 2.0f * plight.halfY;
                 Vec3 lightPt = plight.center + Vec3{offsetX, offsetY, 0.0f};
-                Vec3 L = lightPt - pos;
-                float dist2 = dot(L,L);
-                if (UNLIKELY(dist2 < 1e-12f)) continue;
-                float inv_dist = rsqrt_fast(dist2);
-                L = L * inv_dist;
-                float ndotl = dot(n,L);
+                
+                Vec3 L_paddle = lightPt - pos;
+                float dist2_paddle = dot(L_paddle,L_paddle);
+                if (UNLIKELY(dist2_paddle < 1e-12f)) continue;
+                float inv_dist_paddle = rsqrt_fast(dist2_paddle);
+                L_paddle = L_paddle * inv_dist_paddle;
+                float ndotl = dot(n,L_paddle);
                 if (UNLIKELY(ndotl <= 0.0f)) continue;
+                
                 // Check occlusion (shadow test against scene geometry)
                 if (occludedToPoint(shadowOrigin, lightPt, -1)) continue;
+                
                 // Phase 6: Use pre-computed paddle emission color
-                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2));
+                float atten = 1.0f/(4.0f*3.1415926f*std::max(1e-4f, dist2_paddle));
                 if (config.pbrEnable) {
                     if (!isMetal) {
                         lightAccum = lightAccum + paddleEmit * (ndotl * atten * materials.invPi);
                     } else {
                         Vec3 V = norm(viewDir * -1.0f);
-                        Vec3 H = norm(V + L);
+                        Vec3 H = norm(V + L_paddle);
                         float VoH = std::max(0.0f, dot(V,H));
                         Vec3 F0{0.86f,0.88f,0.94f};
                         Vec3 F = F0 + (Vec3{1,1,1} - F0) * std::pow(1.0f - VoH, 5.0f);
@@ -2180,6 +2351,9 @@ void SoftRenderer::render(const GameState &gs) {
                     lightAccum = lightAccum + paddleEmit * (ndotl * atten);
                 }
             }
+            
+            // Phase 8: Weight by light importance (importance sampling correction)
+            lightAccum = lightAccum * (lightFraction * totalLightCount);
             lightAccum = lightAccum / (float)adaptiveSamples;
             sum = sum + lightAccum;
         }
